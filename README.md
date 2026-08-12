@@ -73,11 +73,12 @@ lua5.4 scripts/smoke-test.lua       # 冒烟测试（打桩 lvgl/dataman，驱�
 | `bin/DeepScan.face` | 实机安装包（Vela Lua 表盘容器，Lua 源码明文内嵌） |
 | `bin/resource.bin` | 同内容的副本，供模拟器/LuaDevTemplate 安装流程使用 |
 
-`.face` 容器格式（已按真实小米手环 9 Pro 表盘样本 `monika_band9Pro.bin` 逆向验证）：
-`5A A5 34 12` 魔数头（0x04-0x07 全零；0x10=2048；0x1C=1；0x20/0xAC=记录区结束偏移；0x28 起 10 字节 ASCII 表盘 ID；0x68 起 UTF-8 标题；0xB0..0x10F 为 96 字节元数据块，与 336×480 设备样本逐字节一致）
-+ TOC（`[类型<<24|序号][0][偏移][长度]`，16 字节/条，以 `类型=0x05000014、偏移=0、长度=0` 终止）
-+ 记录（`[20 字节头][路径名][数据]`，记录 4 字节对齐，Lua 与资源以明文存放）。
-打包脚本会对产物做自解析回读校验；头部结构（除 ID/标题/长度字段外）与官方样本逐字节一致。
+`.face` 容器格式（Face V2，已按 `m0tral/UnpackMiColorFace` 源码与真实小米手环 9 Pro 样本 `monika_band9Pro.bin` 逐字节验证）：
+- **头部（0x00–0x10F）**：`5A A5 34 12` 魔数；0x10=2048；0x1C=1；0x20=预览块偏移；0x28 起 10 字节 ASCII 表盘 ID；0x68 起 UTF-8 标题；0xA8=backImageId(0)、0xAC=previewImageOffset；0xB0–0xFF 为 10 个 8 字节描述符 `[count][offset]`（i=5 指向 Lua 文件表）；0x100 为 element 记录。
+- **文件表（TOC，0x110）**：16 字节条目 `[id=(5<<24)|i][0][偏移][长度]`，以 `(5<<24)|0x14` 终止；文件记录 `[u16 长度&0xFFFF][u8 长度>>16][u8 名称长度][16B 0]` + 名称 + 数据，记录 4 字节对齐。
+- **预览块（文件末尾，0x20/0xAC 指向）**：`[rle][type][宽 u16][高 u16][dataLen][magic 0x5AA521E0][compressType=(w×h×4)<<4|4]` + RLEv11 压缩的 RGBA 图像（230×328，`0x81` 控制字节的行程编码）。
+
+打包脚本对产物做自解析回读校验（文件表、预览 magic/尺寸、RLE 解压像素数）。
 
 ### 在 Windows 上用官方/社区工具链构建（可选）
 
@@ -86,7 +87,7 @@ lua5.4 scripts/smoke-test.lua       # 冒烟测试（打桩 lvgl/dataman，驱�
 3. 真机部署目录：`/data/app/watchface/market/<watchfaceId>/lua/`。
 
 > 预览图可用 `bun scripts/gen-preview.mjs`（或 `node`）重新生成。
-> 官方编译器（Compiler.exe / EasyFace）会在记录区之后追加一段**应用端预览数据**（尾部 `0x5AA521E0` 魔数块，内含 `0x81` 标记的压缩位图块，供 Mi Fitness 表盘列表展示；官方 9 Pro 样本该段约 319 KB）。设备上运行 Lua 只依赖 TOC 与记录区（`payloadEnd` 0x20/0xAC 即记录区结束偏移），故本仓库打包器省略该段——若需在手机 App 内展示自定义预览，请用官方工具链重新打包。
+> `.face` 内嵌的**预览块**（Mi Fitness 表盘列表展示用的缩略图）由打包器自动生成：从 `lua/` 同风格的设计图按 230×328 绘制并 RLEv11 压缩，与官方样本的预览块结构/尺寸/压缩参数一致。这是表盘安装所必需的段，缺失会导致安装器崩溃。
 
 ## 系统文件安全说明
 

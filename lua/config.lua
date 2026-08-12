@@ -13,6 +13,9 @@ config.FS_ROOT = "/"
 -- 列表单页最大行数（防止对象过多导致卡顿）
 config.MAX_LIST_ROWS = 200
 
+-- 单目录最多枚举条目数（限制目录扫描 I/O 上限）
+config.LIST_CAP = 300
+
 -- 深度搜索限制
 config.SEARCH_LIMIT = 60     -- 最多返回结果数
 config.SEARCH_DEPTH = 8      -- 最大递归深度

@@ -23,7 +23,11 @@ function main() {
   console.log("magic : OK");
   console.log("id    :", info.id);
   console.log("title :", info.title);
-  console.log("payloadEnd:", info.payloadEnd);
+  if (info.preview) {
+    console.log(`preview: ${info.preview.width}x${info.preview.height} @ ${info.preview.offset} (${info.preview.blockLen} bytes)`);
+  } else {
+    console.log("preview: MISSING");
+  }
   console.log(`files : ${info.files.length}`);
   for (const f of info.files) {
     console.log(`  #${f.index} ${f.name} (${f.data.length} bytes @ ${f.offset})`);

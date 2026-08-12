@@ -2,6 +2,11 @@
 -- 表盘主界面：终端风格（DEEP_SCAN）
 -- 显示 时间 / 秒 / 日期 / 星期 / 电量 / 步数 / 心率，
 -- 底部提供一个可点击的终端卡片，点按进入文件管理器。
+--
+-- 兼容性说明（针对 9 Pro 运行时）：
+--   * 字体只使用文档已验证的 montserrat 尺寸（14/16/18/24/32），全部 pcall 保护
+--   * 光标闪烁 Timer 用 pcall 保护，不可用时静默降级（不闪烁）
+--   * 点击事件同时注册 SHORT_CLICKED 与 CLICKED（不同固件触发其一）
 
 local lvgl = require("lvgl")
 
@@ -20,30 +25,48 @@ local utils = loadModule("utils")
 local theme = loadModule("theme")
 local db = loadModule("databind")
 
+if not utils then utils = { constValue = function(v) return v end } end
+if not theme then theme = { BG = 0x07090D, TEXT = 0xE6EDF5, TEXT_DIM = 0x8A97A8, ACCENT = 0x37E0A4, ACCENT_DIM = 0x1E8A66, CYAN = 0x4CC9F0, AMBER = 0xFFC857, RED = 0xFF5C5C, SURFACE = 0x0F141B, BORDER = 0x223042 } end
+
 local M = {}
 
 local W, H = utils.constValue(lvgl.HOR_RES), utils.constValue(lvgl.VER_RES)
+if not W or W == 0 then W = 336 end
+if not H or H == 0 then H = 480 end
+
+-- 已验证可用的 montserrat 尺寸
+local VERIFIED_SIZES = { 32, 24, 18, 16, 14 }
 local fonts = {}
 
 local function font(size)
   if not fonts[size] then
-    fonts[size] = lvgl.Font("montserrat", size, "normal")
+    local ok, f = pcall(lvgl.Font, "montserrat", size, "normal")
+    if ok and f then
+      fonts[size] = f
+    else
+      fonts[size] = false -- 缓存失败结果，避免重复尝试
+    end
   end
-  return fonts[size]
+  return fonts[size] or nil
 end
 
--- 大号时钟字体：按可用性依次尝试，失败则降级
+-- 大号时钟字体：只使用已验证尺寸
 local clockFont
 local function initClockFont()
-  local sizes = { 64, 48, 32 }
-  for _, s in ipairs(sizes) do
-    local ok, f = pcall(lvgl.Font, "montserrat", s, "normal")
-    if ok and f then
+  for _, s in ipairs(VERIFIED_SIZES) do
+    local f = font(s)
+    if f then
       clockFont = f
       return
     end
   end
-  clockFont = font(32)
+end
+
+-- 注册点击（SHORT_CLICKED 优先，兼容 CLICKED）
+local function onClick(obj, cb)
+  local ok1 = pcall(function() obj:onevent(lvgl.EVENT.SHORT_CLICKED, cb) end)
+  local ok2 = pcall(function() obj:onevent(lvgl.EVENT.CLICKED, cb) end)
+  return ok1 or ok2
 end
 
 -- ---- 数据状态 ----
@@ -61,30 +84,30 @@ local function renderTime()
   local h = hourT * 10 + hourU
   if h > 23 then h = 23 end -- 容错
   local m = minT * 10 + minU
-  timeLabel:set { text = string.format("%02d:%02d", h, m) }
+  pcall(function() timeLabel:set { text = string.format("%02d:%02d", h, m) } end)
 end
 
 local function renderSec()
   if secT == nil or secU == nil then return end
-  secLabel:set { text = string.format("%02d", secT * 10 + secU) }
+  pcall(function() secLabel:set { text = string.format("%02d", secT * 10 + secU) } end)
 end
 
 local function renderDate()
   if month == nil or day == nil then return end
   local w = week or "--"
-  dateLabel:set { text = string.format("%s  %02d-%02d", w, month, day) }
+  pcall(function() dateLabel:set { text = string.format("%s  %02d-%02d", w, month, day) } end)
 end
 
 local function renderBattery()
   if battery == nil then return end
   local text = string.format("%d%%", math.min(battery, 100))
   if charging then text = text .. " CHG" end
-  batLabel:set { text = text }
+  pcall(function() batLabel:set { text = text } end)
 end
 
 local function renderSteps()
   if steps ~= nil then
-    stepLabel:set { text = utils.thousands(steps) }
+    pcall(function() stepLabel:set { text = utils.thousands(steps) } end)
   end
 end
 
@@ -93,7 +116,7 @@ local function renderHr()
   local color = theme.CYAN
   if hr > 140 then color = theme.RED
   elseif hr > 100 then color = theme.AMBER end
-  hrLabel:set { text = tostring(hr), text_color = color }
+  pcall(function() hrLabel:set { text = tostring(hr), text_color = color } end)
 end
 
 -- ---- 界面构建 ----
@@ -169,7 +192,7 @@ local function build(root)
   -- 卡片内的标签需要把点击冒泡到卡片本体
   local function cardLabel(opts)
     local lbl = lvgl.Label(card, opts)
-    lbl:add_flag(lvgl.FLAG.EVENT_BUBBLE)
+    pcall(function() lbl:add_flag(lvgl.FLAG.EVENT_BUBBLE) end)
     return lbl
   end
 
@@ -215,24 +238,29 @@ local function build(root)
     text_font = font(16),
   }
 
-  card:onevent(lvgl.EVENT.CLICKED, function()
+  onClick(card, function()
     if M.onOpenFS then M.onOpenFS() end
   end)
 
-  -- 光标闪烁
-  local cursorOn = true
-  M.blinkTimer = lvgl.Timer {
+  -- 光标闪烁（可选能力：Timer 不可用时静默降级）
+  local okT, timer = pcall(lvgl.Timer, {
     period = 600,
     repeat_count = -1,
     cb = function()
-      cursorOn = not cursorOn
-      promptLabel:set { text = cursorOn and "_" or "" }
+      if promptLabel then
+        local cur = promptLabel._text or "_"
+        pcall(function()
+          promptLabel:set { text = (cur == "_") and "" or "_" }
+        end)
+      end
     end,
-  }
+  })
+  if okT and timer then M.blinkTimer = timer end
 end
 
 -- ---- 数据订阅 ----
 local function subscribe()
+  if not db or not db.subscribeQ then return end
   db.subscribeQ("timeHourLow", timeLabel, function(obj, v) hourU = v; renderTime() end)
   db.subscribeQ("timeHourHigh", timeLabel, function(obj, v) hourT = v; renderTime() end)
   db.subscribeQ("timeMinuteLow", timeLabel, function(obj, v) minU = v; renderTime() end)
@@ -271,21 +299,21 @@ function M.create(root, onOpenFS)
 end
 
 function M.show()
-  if page then page:set { hidden = false } end
+  if page then pcall(function() page:set { hidden = false } end) end
 end
 
 function M.hide()
-  if page then page:set { hidden = true } end
+  if page then pcall(function() page:set { hidden = true } end) end
 end
 
 function M.pageOnPause()
   if M.blinkTimer then pcall(function() M.blinkTimer:pause() end) end
-  db.pauseAll()
+  if db then pcall(function() db.pauseAll() end) end
 end
 
 function M.pageOnResume()
   if M.blinkTimer then pcall(function() M.blinkTimer:resume() end) end
-  db.resumeAll()
+  if db then pcall(function() db.resumeAll() end) end
 end
 
 return M
