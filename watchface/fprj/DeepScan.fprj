@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DEEP_SCAN Lua 表盘项目（小米手环 9 Pro，336x480）
+     说明：若官方表盘编译器要求 UTF-16 编码或不同的 DeviceType，
+     请使用表盘工具（如 LuaDevTemplate）重新生成 .fprj。
+     Name 中的 app_lua%2Fmain.lua 指向 lua/main.lua 入口。 -->
+<FaceProject DeviceType="362">
+  <Screen Title="DeepScan" Bitmap="preview.png">
+    <Widget Shape="34" Name="app_lua%2Fmain.lua" X="0" Y="0" Width="336" Height="480" Alpha="0" />
+  </Screen>
+</FaceProject>

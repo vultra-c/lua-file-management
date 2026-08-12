@@ -1,0 +1,17 @@
+{
+  "name": "deepscan-watchface",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DEEP_SCAN — 小米手环 9 Pro Lua 表盘（终端风格 + 系统文件管理器），含 .face 打包/解包/冒烟测试工具链",
+  "type": "module",
+  "scripts": {
+    "build:face": "bun scripts/build-face.mjs",
+    "verify:face": "bun scripts/unpack-face.mjs bin/DeepScan.face",
+    "unpack": "bun scripts/unpack-face.mjs",
+    "test:lua": "lua5.4 scripts/smoke-test.lua",
+    "gen:preview": "bun scripts/gen-preview.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
