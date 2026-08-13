@@ -91,6 +91,20 @@ local function ltruncate(s, n)
   return ".." .. s:sub(#s - n + 3)
 end
 
+-- 右截断（保留开头）：用于统计/状态文案，保证“总数”永远可见
+local function rtruncate(s, n)
+  s = tostring(s or "")
+  if #s <= n then return s end
+  return s:sub(1, n - 2) .. ".."
+end
+
+-- 归一化目录项名称：去尾部斜杠、只保留最后一段，兼容某些 readdir 返回全路径/带斜杠
+local function baseName(name)
+  local n = tostring(name or "")
+  n = n:gsub("[\\/]+$", "")
+  return (n:match("([^\\/]+)$")) or n
+end
+
 local function printable(s, n)
   s = tostring(s or "")
   s = s:sub(1, n or 64)
@@ -196,13 +210,14 @@ local function listDir(p)
   -- 先收集全部名字并关闭目录，再逐个判定类型：
   -- 避免在遍历目录时嵌套 open_dir（部分固件/文件系统并发目录句柄有限，
   -- 嵌套 open_dir 会打断外层目录迭代，导致“只列出一个条目”）。
-  local names = {}
+  local names, seen = {}, {}
   local count = 0
   local name = d:read()
   while name and count < LIST_CAP do
     count = count + 1
-    local n = tostring(name)
-    if n ~= "" and n ~= "." and n ~= ".." then
+    local n = baseName(name)
+    if n ~= "" and n ~= "." and n ~= ".." and not seen[n] then
+      seen[n] = true
       names[#names + 1] = n
     end
     name = d:read()
@@ -496,52 +511,64 @@ local function readFileBytes(p, maxBytes)
 end
 
 local function runREDump()
-  local fails = {}
+  -- 先收集所有样本到内存，再统一写盘：
+  --   1) 合并报告写到 /data/deepscan_dump.txt（不依赖 mkdir，/data 可写，单文件好找）
+  --   2) 若 /data/deepscan_re/ 可建立，再按条目拆分成单个文件方便逐条查看
+  local samples = {}
   local okCount, failCount = 0, 0
-  local function save(dest, data)
+  local function collect(tag, data)
     if type(data) == "string" and #data > 0 then
-      return writeFile(joinPath(REDUMP.dir, dest), data)
-    end
-    return false
-  end
-  local function record(tag, label, ok)
-    if ok then
       okCount = okCount + 1
+      samples[#samples + 1] = { tag = tag, data = data }
     else
       failCount = failCount + 1
-      fails[#fails + 1] = tag .. " " .. label
+      samples[#samples + 1] = { tag = tag, data = nil }
     end
   end
 
-  -- 0) 建目录（-p 与无 -p 各试一次，目录已存在时失败忽略）
-  shellExec("mkdir -p " .. REDUMP.dir)
-  shellExec("mkdir " .. REDUMP.dir)
-
   -- 1) 递归目录树（真实文件系统结构，最关键）
-  record("tree", "/", save("tree_root.txt", walkTree("/", REDUMP.tree_depth, REDUMP.tree_budget)))
-  record("tree", "/data", save("tree_data.txt", walkTree("/data", REDUMP.tree_depth + 1, REDUMP.tree_budget)))
-  record("tree", "/system", save("tree_system.txt", walkTree("/system", REDUMP.tree_depth, REDUMP.tree_budget)))
+  collect("tree_root", walkTree("/", REDUMP.tree_depth, REDUMP.tree_budget))
+  collect("tree_data", walkTree("/data", REDUMP.tree_depth + 1, REDUMP.tree_budget))
+  collect("tree_system", walkTree("/system", REDUMP.tree_depth, REDUMP.tree_budget))
 
   -- 2) 文本文件拷贝
   for _, t in ipairs(REDUMP_FILES) do
-    record("file", t[1], save(t[2], readFileBytes(t[1], REDUMP.max_file)))
+    collect(t[2], readFileBytes(t[1], REDUMP.max_file))
   end
 
   -- 3) shell 命令输出
   if type(os.execute) == "function" then
     for _, c in ipairs(REDUMP_CMDS) do
       local ok, out = shellCapture(c[1])
-      record("cmd", c[1], ok and save(c[2], out))
+      collect(c[2], (ok and type(out) == "string" and #out > 0) and out or nil)
     end
   else
-    failCount = failCount + 1
-    fails[#fails + 1] = "cmd (no os.execute)"
+    collect("shell", nil)
   end
 
-  local body = (#fails == 0) and "all samples collected" or table.concat(fails, "\n")
-  showInfo("RE DUMP -> " .. REDUMP.dir,
-    body,
-    string.format("%d saved / %d failed. read tree_*.txt + mount.txt", okCount, failCount))
+  -- 4) 合并报告（写 /data 根目录，不依赖 mkdir）
+  local lines = { "DeepScan RE dump" }
+  for _, s in ipairs(samples) do
+    lines[#lines + 1] = "\n===== " .. s.tag .. " ====="
+    lines[#lines + 1] = s.data or "<failed/empty>"
+  end
+  local report = table.concat(lines, "\n") .. "\n"
+  local target = "/data/deepscan_dump.txt"
+  local wok = writeFile(target, report)
+
+  -- 5) 若子目录可建立，再按条目拆分（mkdir 失败则忽略，不影响合并报告）
+  shellExec("mkdir -p " .. REDUMP.dir)
+  shellExec("mkdir " .. REDUMP.dir)
+  if openDir(REDUMP.dir) then
+    for _, s in ipairs(samples) do
+      if s.data then writeFile(joinPath(REDUMP.dir, s.tag .. ".txt"), s.data) end
+    end
+    writeFile(joinPath(REDUMP.dir, "_report.txt"), report)
+  end
+
+  local body = wok and (target .. "\n" .. okCount .. " ok / " .. failCount .. " failed")
+    or ("write failed: " .. target)
+  showInfo("RE DUMP", body, "open /data/deepscan_dump.txt to review")
 end
 
 -- ---- 界面 ----
@@ -663,11 +690,8 @@ render = function()
     for _, e in ipairs(entries) do
       if e.isDir then nd = nd + 1 else nf = nf + 1 end
     end
-    -- 统计与列表严格一致（无 ".." 行）：如 "12 files + 3 dirs" 即 15 项，避免误解
-    local parts = {}
-    if nf > 0 then parts[#parts + 1] = nf .. " file" .. (nf == 1 and "" or "s") end
-    if nd > 0 then parts[#parts + 1] = nd .. " dir" .. (nd == 1 and "" or "s") end
-    setText(statusLabel, ltruncate(table.concat(parts, " + "), 24))
+    -- 总数优先：如 "15 items (12 files, 3 dirs)"，避免把 "12 files" 误读成总数
+    setText(statusLabel, rtruncate(string.format("%d items (%d files, %d dirs)", total, nf, nd), 28))
   end
 end
 
@@ -694,7 +718,7 @@ end
 
 showFileInfo = function(e)
   local sz = fileSize(e.full)
-  local prev = readPreview(e.full, 64)
+  local prev = readPreview(e.full, 256)
   local body = "size: " .. humanSize(sz) .. "\n\n"
   if prev and prev ~= "" then
     body = body .. "preview:\n" .. prev

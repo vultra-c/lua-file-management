@@ -47,11 +47,11 @@ scripts/gen-preview.mjs      # 预览图生成脚本（纯 Node，无依赖）
 | 操作 | 说明 |
 | --- | --- |
 | 点目录行 | 进入该目录 |
-| 点文件行 | 弹出文件详情（名称、大小、前 64 字节文本预览） |
+| 点文件行 | 弹出文件详情（名称、大小、前 256 字节文本预览） |
 | 行右侧 Delete | 弹出删除确认（CANCEL / DELETE） |
 | 顶栏 `<` | 进入上一级目录 |
 | 顶栏 `i` | 显示系统能力探测结果（面板内还有 `DUMP` / `INJECT`） |
-| 面板 `DUMP` | 一键采集运行时逆向样本到 `/data/deepscan_re/` |
+| 面板 `DUMP` | 一键采集运行时逆向样本到 `/data/deepscan_dump.txt`（单文件）及 `/data/deepscan_re/`（分条） |
 | 面板 `INJECT` | 执行原生代码注入链（需 `payload/module.ko`） |
 | 底部 `<` / `>` | 分页浏览（每页 6 行） |
 
@@ -109,7 +109,12 @@ verify → 可选：mw 读取模块写入的标记地址
 固件包已确认**整体加密 + RSA-2048 签名**（`vela_ap.bin` 为高熵密文，静态解密是死路），因此
 “应用列表注册 + 原生 UI 框架”只能靠**运行时逆向**拿明文。表盘已内置一键采集：
 
-**顶栏 `i` → `DUMP`**，把以下样本写到 `/data/deepscan_re/`：
+**顶栏 `i` → `DUMP`**，把以下样本收集后：
+
+- **主产物**：单个合并报告 **`/data/deepscan_dump.txt`**（写在 `/data` 根目录，不依赖 `mkdir`，
+  用文件管理器进入 `/data` 点它即可看到全文开头）；
+- **辅助产物**：若 `/data/deepscan_re/` 可建立，再按条目拆分成 `tree_root.txt`、`tree_data.txt`、
+  `mount.txt` 等单个文件，方便逐条查看。
 
 | 类别 | 内容 |
 | --- | --- |
@@ -119,9 +124,9 @@ verify → 可选：mw 读取模块写入的标记地址
 | 目录清单 | 各目录的类型 + 大小（已并入递归树） |
 | shell 输出 | `mount`、`uname -a`、`df`、`lsmod`、`ps`、`ls -l /`、`ls -l /data`、`ls -l /usr/lib`、`ls -l /system`、`cat /proc/version` |
 
-采集完成后用本表盘文件管理器进入 `/data/deepscan_re/`，先看 `tree_root.txt` 和 `tree_data.txt`——
-它们会告诉你设备上**真实存在**哪些目录和文件（应用注册表、`.so` 库、`/proc` 入口到底叫什么名、
-在哪个路径），然后把 `tree_root.txt`、`tree_data.txt`、`mount.txt` 的内容发回来即可。
+采集完成后用本表盘文件管理器进入 `/data`，先看 **`deepscan_dump.txt`**——它告诉你设备上**真实存在**
+哪些目录和文件（应用注册表、`.so` 库、`/proc` 入口到底叫什么名、在哪个路径）。把
+`deepscan_dump.txt` 的全文（或用 AstroBox/ADB 把 `/data/deepscan_dump.txt` 拉出来）发回来即可。
 
 ## 关于「系统原生 UI」
 

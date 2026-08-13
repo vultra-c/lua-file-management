@@ -315,10 +315,9 @@ check(env.tapBtn(env.nameBtnOf("i")), "tap i opens capability panel")
 check(env.tapBtn(env.nameBtnOf("DUMP")), "tap DUMP runs RE dump")
 check(env.findLabelContains("RE DUMP") ~= nil, "dump result panel shows")
 
-local treeRoot = written["/data/deepscan_re/tree_root.txt"]
-local treeData = written["/data/deepscan_re/tree_data.txt"]
-check(treeRoot and treeRoot:find("tmp/", 1, true) ~= nil, "tree_root.txt lists tmp/")
-check(treeData and treeData:find("app/", 1, true) ~= nil, "tree_data.txt lists app/")
+local dump = written["/data/deepscan_dump.txt"]
+check(dump and dump:find("tmp/", 1, true) ~= nil, "deepscan_dump.txt lists tmp/")
+check(dump and dump:find("app/", 1, true) ~= nil, "deepscan_dump.txt lists app/")
 
 io.open = realIOOpen
 os.execute = realExecute
@@ -332,14 +331,14 @@ check(ok6, "main.lua loads for pagination check")
 check(env.tapBtn(env.nameBtnOf("<")), "back to /")
 check(env.findLabel("many/") ~= nil, "root lists many/")
 check(env.tapBtn(env.nameBtnOf("many/")), "enter /many")
-check(env.findLabel("12 files") ~= nil, "footer shows 12 files")
+check(env.findLabelContains("12 items (12 files") ~= nil, "footer shows 12 items (12 files)")
 check(env.findLabel("1/2") ~= nil, "page label 1/2")
 check(env.findLabel("file01.txt") ~= nil, "page 1 lists file01.txt")
 check(env.findLabel("file07.txt") == nil, "page 1 hides file07.txt")
 check(env.tapBtn(env.nameBtnOf(">")), "tap next page")
 check(env.findLabel("2/2") ~= nil, "page label 2/2")
 check(env.findLabel("file07.txt") ~= nil, "page 2 lists file07.txt")
-check(env.findLabel("12 files") ~= nil, "footer still 12 files (total)")
+check(env.findLabelContains("12 items (12 files") ~= nil, "footer still 12 items (total)")
 
 -- ============ 汇总 ============
 print(string.format("== result: %d failure(s) ==", failures))
