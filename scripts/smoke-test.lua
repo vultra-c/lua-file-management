@@ -69,12 +69,16 @@ local function makeEnv(withFs)
 
   if withFs then
     local tree = {
-      ["/"] = { data = "d", tmp = "d", etc = "d" },
+      ["/"] = { data = "d", tmp = "d", etc = "d", many = "d" },
       ["/data"] = { app = "d", ["notes.txt"] = "f", ["report.txt"] = "f" },
       ["/data/app"] = { ["config.json"] = "f" },
       ["/tmp"] = { ["deepscan_smoke.bin"] = "f" },
       ["/etc"] = {},
+      ["/many"] = {},
     }
+    for i = 1, 12 do
+      tree["/many"][string.format("file%02d.txt", i)] = "f"
+    end
     lvgl.fs = {}
     function lvgl.fs.open_dir(p)
       local t = tree[p]
@@ -180,9 +184,9 @@ check(env.tapBtn(appBtn), "tap app/ navigates")
 check(env.findLabel("/data/app") ~= nil, "path label shows /data/app")
 check(env.findLabel("config.json") ~= nil, "lists config.json")
 
-local upBtn = env.nameBtnOf("..  (up)")
-check(upBtn ~= nil, "found up button")
-check(env.tapBtn(upBtn), "tap up")
+local upBtn = env.nameBtnOf("<")
+check(upBtn ~= nil, "found header back button")
+check(env.tapBtn(upBtn), "tap back")
 check(env.findLabel("/data") ~= nil, "back to /data")
 
 -- ============ 阶段 B：删除文件 ============
@@ -195,7 +199,7 @@ rf:close()
 check(io.open(realFile, "r") ~= nil, "real smoke file created")
 
 -- 从 /data 上到 /，进入 /tmp
-check(env.tapBtn(env.nameBtnOf("..  (up)")), "up to /")
+check(env.tapBtn(env.nameBtnOf("<")), "back to /")
 check(env.findLabel("tmp/") ~= nil, "root lists tmp/")
 check(env.tapBtn(env.nameBtnOf("tmp/")), "enter /tmp")
 check(env.findLabel("deepscan_smoke.bin") ~= nil, "/tmp lists smoke file")
@@ -283,13 +287,24 @@ env = makeEnv(true)
 local written = {}
 local realIOOpen = io.open
 io.open = function(path, mode)
-  if mode == "wb" then
+  if mode == "wb" or mode == "w" then
     return {
       write = function(_, d) written[path] = d; return #d end,
       close = function() return true end,
     }
   end
   return nil
+end
+-- writeFile 现在优先 lvgl.fs.open_file("w")，捕获写入以验证产物
+local realFsOpenFile = env.lvgl.fs.open_file
+env.lvgl.fs.open_file = function(path, mode)
+  if mode == "w" then
+    return {
+      write = function(_, d) written[path] = d; return #d end,
+      close = function() return true end,
+    }
+  end
+  return realFsOpenFile(path, mode)
 end
 os.execute = function() return true, "exit", 0 end
 io.popen = function() return nil end
@@ -308,6 +323,23 @@ check(treeData and treeData:find("app/", 1, true) ~= nil, "tree_data.txt lists a
 io.open = realIOOpen
 os.execute = realExecute
 io.popen = realPopen
+
+-- ============ 阶段 G：分页统计与列表严格一致 ============
+print("== Phase G: pagination total matches footer ==")
+env = makeEnv(true)
+local ok6 = pcall(dofile, ROOT .. "lua/main.lua")
+check(ok6, "main.lua loads for pagination check")
+check(env.tapBtn(env.nameBtnOf("<")), "back to /")
+check(env.findLabel("many/") ~= nil, "root lists many/")
+check(env.tapBtn(env.nameBtnOf("many/")), "enter /many")
+check(env.findLabel("12 files") ~= nil, "footer shows 12 files")
+check(env.findLabel("1/2") ~= nil, "page label 1/2")
+check(env.findLabel("file01.txt") ~= nil, "page 1 lists file01.txt")
+check(env.findLabel("file07.txt") == nil, "page 1 hides file07.txt")
+check(env.tapBtn(env.nameBtnOf(">")), "tap next page")
+check(env.findLabel("2/2") ~= nil, "page label 2/2")
+check(env.findLabel("file07.txt") ~= nil, "page 2 lists file07.txt")
+check(env.findLabel("12 files") ~= nil, "footer still 12 files (total)")
 
 -- ============ 汇总 ============
 print(string.format("== result: %d failure(s) ==", failures))

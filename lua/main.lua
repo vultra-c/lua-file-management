@@ -17,17 +17,21 @@
 
 local lvgl = require("lvgl")
 
-local W = lvgl.HOR_RES()
-local H = lvgl.VER_RES()
-if not W or W == 0 then W = 336 end
-if not H or H == 0 then H = 480 end
+-- HOR_RES/VER_RES 在部分运行时是函数、部分模拟环境是数值，统一读取
+local function constValue(value)
+  return type(value) == "function" and value() or value
+end
+local W = constValue(lvgl.HOR_RES) or 336
+local H = constValue(lvgl.VER_RES) or 480
+if W == 0 then W = 336 end
+if H == 0 then H = 480 end
 
 -- ---- 配置 ----
 local HOME = "/data"
 local ROOT = "/"
 local LIST_CAP = 300
 local ROWS_PER_PAGE = 6
-local ENTRIES_PER_PAGE = ROWS_PER_PAGE - 1 -- 每页条目数（顶行固定为 ".."）
+local ENTRIES_PER_PAGE = ROWS_PER_PAGE -- 每页条目数（无 ".." 行，返回上级用顶栏 <）
 local ROW_H = 56
 local HEADER_H = 64
 local FOOTER_H = 44
@@ -167,7 +171,11 @@ local function fileSize(p)
   local f = openFile(p, "r")
   if not f then return nil end
   local sz = nil
-  pcall(function() sz = f:seek("end") end)
+  -- 固件文件接口为 seek(offset, whence)，whence ∈ {"set","cur","end"}；旧写法 seek("end") 兜底
+  pcall(function() sz = f:seek(0, "end") end)
+  if type(sz) ~= "number" then
+    pcall(function() sz = f:seek("end") end)
+  end
   pcall(function() f:close() end)
   return (type(sz) == "number") and sz or nil
 end
@@ -183,30 +191,35 @@ local function readPreview(p, n)
 end
 
 local function listDir(p)
-  if not (lvgl.fs and type(lvgl.fs.open_dir) == "function") then return nil end
   local d = openDir(p)
   if not d then return nil end
-  local dirs, files = {}, {}
+  -- 先收集全部名字并关闭目录，再逐个判定类型：
+  -- 避免在遍历目录时嵌套 open_dir（部分固件/文件系统并发目录句柄有限，
+  -- 嵌套 open_dir 会打断外层目录迭代，导致“只列出一个条目”）。
+  local names = {}
   local count = 0
   local name = d:read()
   while name and count < LIST_CAP do
     count = count + 1
     local n = tostring(name)
     if n ~= "" and n ~= "." and n ~= ".." then
-      local full = joinPath(p, n)
-      if isDir(full) then
-        dirs[#dirs + 1] = { name = n, full = full, isDir = true }
-      else
-        files[#files + 1] = { name = n, full = full, isDir = false }
-      end
+      names[#names + 1] = n
     end
     name = d:read()
   end
   pcall(function() d:close() end)
-  table.sort(dirs, function(a, b) return a.name < b.name end)
-  table.sort(files, function(a, b) return a.name < b.name end)
-  for _, e in ipairs(files) do dirs[#dirs + 1] = e end
-  return dirs
+  table.sort(names)
+  local out, files = {}, {}
+  for _, n in ipairs(names) do
+    local full = joinPath(p, n)
+    if isDir(full) then
+      out[#out + 1] = { name = n, full = full, isDir = true }
+    else
+      files[#files + 1] = { name = n, full = full, isDir = false }
+    end
+  end
+  for _, e in ipairs(files) do out[#out + 1] = e end
+  return out
 end
 
 local function removePath(p)
@@ -332,9 +345,13 @@ end
 local function injectWritePayload()
   if not PAYLOAD or #PAYLOAD == 0 then return false, "no embedded payload" end
   local ok, err = pcall(function()
-    local f = io.open(INJECT.ko_path, "wb")
-    if not f and lvgl.fs and type(lvgl.fs.open_file) == "function" then
+    -- 优先用已文档化且实机验证的 lvgl.fs.open_file(path, "w")
+    local f
+    if lvgl.fs and type(lvgl.fs.open_file) == "function" then
       f = lvgl.fs.open_file(INJECT.ko_path, "w")
+    end
+    if not f and io and type(io.open) == "function" then
+      f = io.open(INJECT.ko_path, "wb") or io.open(INJECT.ko_path, "w")
     end
     if not f then error("open failed") end
     f:write(PAYLOAD)
@@ -455,11 +472,15 @@ end
 
 local function writeFile(path, data)
   return pcall(function()
-    local f = io and io.open and io.open(path, "wb")
-    if not f and lvgl.fs and type(lvgl.fs.open_file) == "function" then
+    -- 优先用已文档化且实机验证的 lvgl.fs.open_file(path, "w")，io.open("wb") 作兜底
+    local f
+    if lvgl.fs and type(lvgl.fs.open_file) == "function" then
       f = lvgl.fs.open_file(path, "w")
     end
-    if not f then error("open failed") end
+    if not f and io and type(io.open) == "function" then
+      f = io.open(path, "wb") or io.open(path, "w")
+    end
+    if not f then error("open failed: " .. tostring(path)) end
     f:write(data)
     f:close()
   end)
@@ -616,23 +637,6 @@ local function addRow(e, slot)
   rows[#rows + 1] = { card, sep, delBtn }
 end
 
--- 返回上一级行
-local function addUpRow(slot)
-  local y = slot * ROW_H
-  local card = lvgl.Object(listArea, { x = 0, y = y, w = W, h = ROW_H, bg_color = 0, bg_opa = 0, border_width = 0, pad_all = 0 })
-  card:clear_flag(lvgl.FLAG.SCROLLABLE)
-  card:add_flag(lvgl.FLAG.CLICKABLE)
-
-  mkRowIcon(card, true)
-  mkLabel(card, { x = NAME_X, y = (ROW_H - 20) / 2, w = W - NAME_X - DEL_W - 28, text = "..  (up)", text_color = C.ACCENT, text_font = font(16) })
-  card:onevent(lvgl.EVENT.SHORT_CLICKED, function() goUp() end)
-
-  local sep = lvgl.Object(listArea, { x = 20, y = y + ROW_H - 1, w = W - 40, h = 1, bg_color = C.SEP, bg_opa = 255, border_width = 0 })
-  sep:clear_flag(lvgl.FLAG.SCROLLABLE)
-
-  rows[#rows + 1] = { card, sep }
-end
-
 render = function()
   clearRows()
   setText(pathLabel, ltruncate(path, 34))
@@ -642,11 +646,10 @@ render = function()
   if pageIdx >= pageCount then pageIdx = pageCount - 1 end
   if pageIdx < 0 then pageIdx = 0 end
 
-  addUpRow(0)
   local start = pageIdx * ENTRIES_PER_PAGE
   for k = 1, ENTRIES_PER_PAGE do
     local e = entries[start + k]
-    if e then addRow(e, k) end
+    if e then addRow(e, k - 1) end
   end
 
   setText(pageLabel, string.format("%d/%d", pageIdx + 1, pageCount))
@@ -660,7 +663,11 @@ render = function()
     for _, e in ipairs(entries) do
       if e.isDir then nd = nd + 1 else nf = nf + 1 end
     end
-    setText(statusLabel, ltruncate(string.format("%d dirs / %d files", nd, nf), 24))
+    -- 统计与列表严格一致（无 ".." 行）：如 "12 files + 3 dirs" 即 15 项，避免误解
+    local parts = {}
+    if nf > 0 then parts[#parts + 1] = nf .. " file" .. (nf == 1 and "" or "s") end
+    if nd > 0 then parts[#parts + 1] = nd .. " dir" .. (nd == 1 and "" or "s") end
+    setText(statusLabel, ltruncate(table.concat(parts, " + "), 24))
   end
 end
 
