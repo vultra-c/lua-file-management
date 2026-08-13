@@ -78,3 +78,37 @@
 
 > 本仓库已把容器解析/提取（`fwextract.mjs`）、ELF 分析（`analyze.mjs`）、固件扫描（`fwscan.mjs`）、
 > 解压（`fwdecomp.mjs`）全部备好；加密墙是唯一且不可绕过的障碍。
+
+## 追加发现：MCU 侧明文区提取的「应用列表 / 文件系统地图」
+
+从 MCU 侧明文字符串区（Thumb 码段 + 路径表）完整提取出系统布局，**这几乎就是
+应用列表（launcher）的完整清单**——每个 `/system/image/*.res` 对应应用列表里的一个应用：
+
+```
+/system/image/launcher.res     # 桌面/应用列表资源（launcher 本体）
+/system/app                    # 应用目录（AP 侧应用注册表所在地，vela_ap 加密内）
+
+# 应用列表 = 以下每个 .res 一个应用（按字母序，共 50+ 项）：
+activities  aivs(小爱)  alarm  alipay  breath  calendar  charge  check_tool
+chronograph(秒表)  compass  control_center  easter_egg  find_phone  flashlight
+health  heartrate  home  interconnect  launcher  media  mijia  nfccard  notifications
+ota  oxygen  phone  phonemute  pressure  rainbow80/128/160/304  remote_camera
+settings  setupwizard  share  sleep  sport_course  sport_record  sport_reminder
+sport_warmup  sport_widgets  sports  system  timer  todo  tomato_clock
+ubidance  vitality  watchface  weather  womenhealth  world_clock  wxpay
+
+# 表盘目录（watchfaceId = 目录名）：
+/system/watchface/267110001/  267130002/  267130003/  267130004/
+/system/watchface/120917343457/ ... /120917345727/   # 官方/第三方表盘
+/system/watchface/aod/367150001/ ... /367150006/     # AOD 表盘（9 Pro 系列）
+```
+
+其它关键路径：`/system/boot`、`/system/bt`、`/system/font/MiSans-*.ttf`（系统原生字体，
+含 MiSans-Regular/Medium/Demibold 与 MiSansF 系列）、`/system/gps`、`/system/i18n/<lang>/LC_MESSAGES/messages.mo`、
+`/data/ota/...`、`/data/etc/alsa.conf`、`/data/log/`。
+
+**结论（L3 应用列表注册）**：应用列表由 launcher 从 `/system/image/*.res` 派生，
+但「如何新增一个条目 / 如何让点击后拉起自定义原生应用」的 schema 仍在加密的
+`vela_ap.bin` 内（含 `app_install`/`launcher_add` 逻辑）。要拿到明文，只能靠设备运行时：
+装好表盘 → 顶栏 `i` → **`DUMP`** → 把 `/data/deepscan_dump.txt` 发回来（它包含
+设备上真实挂载的 `/system`、`/data`、`/proc` 全貌）。
