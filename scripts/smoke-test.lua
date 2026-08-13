@@ -276,6 +276,39 @@ os.execute = realExecute
 io.popen = realPopen
 PAYLOAD = nil
 
+-- ============ 阶段 F：RE DUMP（目录树 + 文件拷贝 + shell 捕获）============
+-- 打桩 io.open 捕获写入，验证 tree_root/tree_data 目录树生成 + 结果面板。
+print("== Phase F: RE dump (tree walk + copy + shell capture) ==")
+env = makeEnv(true)
+local written = {}
+local realIOOpen = io.open
+io.open = function(path, mode)
+  if mode == "wb" then
+    return {
+      write = function(_, d) written[path] = d; return #d end,
+      close = function() return true end,
+    }
+  end
+  return nil
+end
+os.execute = function() return true, "exit", 0 end
+io.popen = function() return nil end
+
+local ok5 = pcall(dofile, ROOT .. "lua/main.lua")
+check(ok5, "main.lua loads for RE dump")
+check(env.tapBtn(env.nameBtnOf("i")), "tap i opens capability panel")
+check(env.tapBtn(env.nameBtnOf("DUMP")), "tap DUMP runs RE dump")
+check(env.findLabelContains("RE DUMP") ~= nil, "dump result panel shows")
+
+local treeRoot = written["/data/deepscan_re/tree_root.txt"]
+local treeData = written["/data/deepscan_re/tree_data.txt"]
+check(treeRoot and treeRoot:find("tmp/", 1, true) ~= nil, "tree_root.txt lists tmp/")
+check(treeData and treeData:find("app/", 1, true) ~= nil, "tree_data.txt lists app/")
+
+io.open = realIOOpen
+os.execute = realExecute
+io.popen = realPopen
+
 -- ============ 汇总 ============
 print(string.format("== result: %d failure(s) ==", failures))
 os.exit(failures == 0 and 0 or 1)

@@ -27,6 +27,7 @@ local HOME = "/data"
 local ROOT = "/"
 local LIST_CAP = 300
 local ROWS_PER_PAGE = 6
+local ENTRIES_PER_PAGE = ROWS_PER_PAGE - 1 -- 每页条目数（顶行固定为 ".."）
 local ROW_H = 56
 local HEADER_H = 64
 local FOOTER_H = 44
@@ -393,34 +394,64 @@ end
 local REDUMP = {
   dir = "/data/deepscan_re", -- 采集输出目录（/data 可写）
   max_file = 65536,           -- 单个文本文件拷贝上限（字节）
+  tree_depth = 3,             -- 目录树最大深度
+  tree_budget = 600,          -- 目录树条目上限
 }
 
--- 文本文件直接拷贝：应用注册表 + /proc 运行时信息
+-- 文本文件直接拷贝：应用注册表 + /proc 运行时信息（路径不存在则跳过，不影响其它项）
 local REDUMP_FILES = {
-  { "/data/apps.json",   "apps.json" },
-  { "/data/apps.db",     "apps.db" },
-  { "/data/persist.db",  "persist.db" },
-  { "/proc/modules",     "proc_modules.txt" },
-  { "/proc/version",     "proc_version.txt" },
-  { "/proc/kallsyms",    "proc_kallsyms.txt" },
-  { "/etc/passwd",       "etc_passwd.txt" },
-  { "/etc/group",        "etc_group.txt" },
+  { "/data/apps.json",     "apps.json" },
+  { "/data/apps.db",       "apps.db" },
+  { "/data/persist.db",    "persist.db" },
+  { "/system/apps.json",   "system_apps.json" },
+  { "/proc/modules",       "proc_modules.txt" },
+  { "/proc/version",       "proc_version.txt" },
+  { "/proc/kallsyms",      "proc_kallsyms.txt" },
 }
 
--- 目录清单（Lua 原生列出，带类型 + 大小）
-local REDUMP_DIRS = {
-  "/", "/data", "/data/app", "/data/ota", "/usr", "/usr/lib", "/lib",
-  "/system", "/system/image", "/system/watchface", "/etc", "/mnt", "/tmp", "/dev",
-}
-
--- shell 命令输出（os.execute 可用时）
+-- shell 命令输出（os.execute 可用时；不存在/无权限则记失败，不影响其余项）
 local REDUMP_CMDS = {
-  { "mount",     "mount.txt" },
-  { "uname -a",  "uname.txt" },
-  { "df",        "df.txt" },
-  { "ls -l /data", "ls_data.txt" },
-  { "ls -l /usr/lib", "ls_usrlib.txt" },
+  { "mount",              "mount.txt" },
+  { "uname -a",           "uname.txt" },
+  { "df",                 "df.txt" },
+  { "lsmod",              "lsmod.txt" },
+  { "ps",                 "ps.txt" },
+  { "ls -l /",            "ls_root.txt" },
+  { "ls -l /data",        "ls_data.txt" },
+  { "ls -l /usr/lib",     "ls_usrlib.txt" },
+  { "ls -l /system",      "ls_system.txt" },
+  { "cat /proc/version",  "cat_proc_version.txt" },
 }
+
+-- 递归目录树：从 root 出发按深度/条目上限列出真实文件系统结构。
+-- 这是“发现真实路径”的关键——之前按猜测路径找 apps.json/usr/lib 大多不存在。
+local function walkTree(root, maxDepth, budget)
+  maxDepth = maxDepth or 3
+  budget = budget or 600
+  local out = {}
+  local count = 0
+  local function walk(dir, indent, d)
+    if count >= budget or d > maxDepth then return end
+    local list = listDir(dir)
+    if not list then
+      count = count + 1
+      out[#out + 1] = indent .. dir .. "  <cannot list>"
+      return
+    end
+    for _, e in ipairs(list) do
+      if count >= budget then break end
+      count = count + 1
+      if e.isDir then
+        out[#out + 1] = indent .. e.name .. "/"
+        if d < maxDepth then walk(e.full, indent .. "  ", d + 1) end
+      else
+        out[#out + 1] = indent .. e.name .. "  " .. tostring(fileSize(e.full) or "?")
+      end
+    end
+  end
+  walk(root, "", 0)
+  return table.concat(out, "\n") .. "\n"
+end
 
 local function writeFile(path, data)
   return pcall(function()
@@ -465,28 +496,14 @@ local function runREDump()
   shellExec("mkdir -p " .. REDUMP.dir)
   shellExec("mkdir " .. REDUMP.dir)
 
-  -- 1) 文本文件拷贝
+  -- 1) 递归目录树（真实文件系统结构，最关键）
+  record("tree", "/", save("tree_root.txt", walkTree("/", REDUMP.tree_depth, REDUMP.tree_budget)))
+  record("tree", "/data", save("tree_data.txt", walkTree("/data", REDUMP.tree_depth + 1, REDUMP.tree_budget)))
+  record("tree", "/system", save("tree_system.txt", walkTree("/system", REDUMP.tree_depth, REDUMP.tree_budget)))
+
+  -- 2) 文本文件拷贝
   for _, t in ipairs(REDUMP_FILES) do
     record("file", t[1], save(t[2], readFileBytes(t[1], REDUMP.max_file)))
-  end
-
-  -- 2) 目录清单
-  for _, d in ipairs(REDUMP_DIRS) do
-    local list = listDir(d)
-    if not list then
-      record("dir", d, false)
-    else
-      local out = {}
-      for _, e in ipairs(list) do
-        if e.isDir then
-          out[#out + 1] = "D  " .. e.name
-        else
-          out[#out + 1] = "F  " .. e.name .. "  " .. tostring(fileSize(e.full) or "?")
-        end
-      end
-      local dest = "dir_" .. (d:gsub("[^%w]", "_")) .. ".txt"
-      record("dir", d, save(dest, table.concat(out, "\n") .. "\n"))
-    end
   end
 
   -- 3) shell 命令输出
@@ -503,7 +520,7 @@ local function runREDump()
   local body = (#fails == 0) and "all samples collected" or table.concat(fails, "\n")
   showInfo("RE DUMP -> " .. REDUMP.dir,
     body,
-    string.format("%d saved / %d failed. browse this dir in file manager", okCount, failCount))
+    string.format("%d saved / %d failed. read tree_*.txt + mount.txt", okCount, failCount))
 end
 
 -- ---- 界面 ----
@@ -621,19 +638,15 @@ render = function()
   setText(pathLabel, ltruncate(path, 34))
 
   local total = #entries
-  local pageCount = math.max(1, math.ceil(total / ROWS_PER_PAGE))
+  local pageCount = math.max(1, math.ceil(total / ENTRIES_PER_PAGE))
   if pageIdx >= pageCount then pageIdx = pageCount - 1 end
   if pageIdx < 0 then pageIdx = 0 end
 
-  local slot = 0
-  if pageIdx == 0 then
-    addUpRow(0)
-    slot = 1
-  end
-  local start = pageIdx * ROWS_PER_PAGE
-  for k = 1, ROWS_PER_PAGE - slot do
+  addUpRow(0)
+  local start = pageIdx * ENTRIES_PER_PAGE
+  for k = 1, ENTRIES_PER_PAGE do
     local e = entries[start + k]
-    if e then addRow(e, slot + k - 1) end
+    if e then addRow(e, k) end
   end
 
   setText(pageLabel, string.format("%d/%d", pageIdx + 1, pageCount))
@@ -665,7 +678,11 @@ end
 
 goUp = function()
   local parent = parentOf(path)
-  if parent then navigate(parent) end
+  if parent then
+    navigate(parent)
+  else
+    setText(statusLabel, "already at /")
+  end
 end
 
 showFileInfo = function(e)

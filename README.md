@@ -115,11 +115,13 @@ verify → 可选：mw 读取模块写入的标记地址
 | --- | --- |
 | 应用注册表 | `/data/apps.json`、`/data/apps.db`、`/data/persist.db` 的副本 |
 | 运行时信息 | `/proc/modules`、`/proc/version`、`/proc/kallsyms`、`/etc/passwd`、`/etc/group` |
-| 目录清单 | `/`、`/data`、`/data/app`、`/usr/lib`、`/lib`、`/system/image`、`/system/watchface` 等（类型+大小） |
-| shell 输出 | `mount`、`uname -a`、`df`、`ls -l /data`、`ls -l /usr/lib` |
+| 递归目录树 | `tree_root.txt`（`/`）、`tree_data.txt`（`/data`）、`tree_system.txt`（`/system`）——**发现真实路径的关键** |
+| 目录清单 | 各目录的类型 + 大小（已并入递归树） |
+| shell 输出 | `mount`、`uname -a`、`df`、`lsmod`、`ps`、`ls -l /`、`ls -l /data`、`ls -l /usr/lib`、`ls -l /system`、`cat /proc/version` |
 
-采集完成后用本表盘文件管理器进入 `/data/deepscan_re/`，逐条点开复制内容发回来即可（`apps.json`
-与 `dir_*` 清单是定位“应用列表注册 schema”和“原生 UI 框架 `.so`”的关键）。
+采集完成后用本表盘文件管理器进入 `/data/deepscan_re/`，先看 `tree_root.txt` 和 `tree_data.txt`——
+它们会告诉你设备上**真实存在**哪些目录和文件（应用注册表、`.so` 库、`/proc` 入口到底叫什么名、
+在哪个路径），然后把 `tree_root.txt`、`tree_data.txt`、`mount.txt` 的内容发回来即可。
 
 ## 关于「系统原生 UI」
 
