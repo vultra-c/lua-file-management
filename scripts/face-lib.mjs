@@ -12,7 +12,9 @@
 //     - 0xB0..0xFF 10 个 8 字节描述符 [count][offset]：
 //         i=0 elements / i=2 单图 / i=3 图列表 / i=5 应用(lua) / i=7 widgets / i=9 动作
 //     - 0x100 element 记录（16 字节）
-//   TOC 0x110：16 字节条目 [id=(5<<24)|i][0][offset][size]，以 (5<<24)|0x14 终止
+//   TOC 0x110：16 字节条目 [id=(5<<24)|i][0][offset][size]，共 fileCount 条
+//   元素数据（紧跟 TOC 之后，16 字节）：[TargetId=(5<<24)|luaEntryIndex][PosX][PosY][0]*8
+//     —— 设备靠它找到 Lua 入口文件（app id == 0x05<<24 | 文件在 TOC 中的索引）
 //   文件记录：[u16 size&0xFFFF][u8 size>>16][u8 nameLen][16B 0] + name + data，4 字节对齐
 //   预览块（末尾）：RLEv11 压缩的 RGBA 图像，magic 0x5AA521E0
 
@@ -125,8 +127,10 @@ export function buildPreviewBlock(rgba, width = PREVIEW_W, height = PREVIEW_H) {
 }
 
 // 构建完整 .face
-export function buildFace(files, { id, title, previewRgba } = {}) {
+export function buildFace(files, { id, title, previewRgba, luaEntryIndex = 0 } = {}) {
   if (!/^[0-9]{1,10}$/.test(id || "")) throw new Error(`bad watchface id: ${id}`);
+  if (!Number.isInteger(luaEntryIndex) || luaEntryIndex < 0 || luaEntryIndex >= files.length)
+    throw new Error(`bad luaEntryIndex: ${luaEntryIndex}`);
   const idBuf = Buffer.alloc(ID_SIZE, 0);
   idBuf.write(id, 0, "ascii");
   const titleBuf = Buffer.from(String(title || "watchface"), "utf8");
@@ -150,9 +154,10 @@ export function buildFace(files, { id, title, previewRgba } = {}) {
     toc.push(e);
     cursor += rec.size + ((4 - (rec.size % 4)) % 4);
   });
-  const term = Buffer.alloc(16, 0);
-  term.writeUInt32LE((5 << 24) | RECORD_HEADER_SIZE, 0); // 终止哨兵（与官方一致）
-  toc.push(term);
+  // 元素数据块：TargetId 指向 Lua 入口文件在 TOC 中的索引（官方样本：0x05000014 = index 20 = 入口 lua）
+  const elem = Buffer.alloc(16, 0);
+  elem.writeUInt32LE((5 << 24) | luaEntryIndex, 0);
+  toc.push(elem);
 
   const previewOffset = cursor;
   const rgba = previewRgba || null;
@@ -185,7 +190,7 @@ export function buildFace(files, { id, title, previewRgba } = {}) {
   desc(0xf0, 0, terminatorOffset); // i=8
   desc(0xf8, 0, terminatorOffset); // i=9 action
 
-  // element 记录 @0x100：指向 TOC 终止条目（与官方样本一致）
+  // element 记录 @0x100：dataOfs 指向元素数据块（其 TargetId = Lua 入口文件索引）
   head.writeUInt16LE(0, 0x100);
   head.writeUInt32LE(terminatorOffset, 0x108);
   head.writeUInt32LE(0x10, 0x10c);
@@ -220,6 +225,9 @@ export function parseFace(buf) {
   const previewOffset = buf.readUInt32LE(0x20);
   const previewImageOffset = buf.readUInt32LE(0xac);
   const fileCount = buf.readUInt32LE(0xd8); // apps 描述符的 count
+  const elemDataOfs = buf.readUInt32LE(0x108);
+  const elemTargetId = buf.readUInt32LE(elemDataOfs);
+  const luaEntryIndex = elemTargetId === 0 ? -1 : (elemTargetId & 0xffffff);
 
   let preview = null;
   if (previewOffset > 0 && previewOffset + 20 <= buf.length && buf.readUInt32LE(previewOffset + 12) === PREVIEW_MAGIC) {
@@ -248,5 +256,5 @@ export function parseFace(buf) {
     });
     o += 16;
   }
-  return { id, title, previewOffset, previewImageOffset, fileCount, preview, files };
+  return { id, title, previewOffset, previewImageOffset, fileCount, preview, files, luaEntryIndex };
 }

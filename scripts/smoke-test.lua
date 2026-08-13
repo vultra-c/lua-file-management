@@ -1,11 +1,11 @@
 -- scripts/smoke-test.lua
--- DEEP_SCAN 表盘冒烟测试：在桌面 Lua 5.4 下用打桩的 lvgl/dataman/vibrator
--- 加载真实源码并驱动主流程（入口加载 / 时间渲染 / 目录浏览 / 深度搜索 / 删除文件）。
+-- DEEP_SCAN 表盘冒烟测试：在桌面 Lua 5.4 下用打桩的 lvgl/dataman
+-- 加载真实 lua/main.lua（单文件自包含）并驱动主流程：
+--   入口加载 / 时间渲染 / 文件管理器打开 / 目录浏览 / 深度搜索 / 删除文件 / 无 fs 降级
 -- 用法：lua5.4 scripts/smoke-test.lua   （需在仓库根目录执行）
 -- 返回非 0 表示失败。
 
 local ROOT = "./"
-package.path = ROOT .. "lua/?.lua;" .. package.path
 local SCRIPT_PATH = ROOT .. "lua/"
 
 local failures = 0
@@ -19,25 +19,29 @@ local function check(cond, msg)
 end
 
 -- ============ 打桩环境 ============
-local registry
-local function makeStubEnv(withFs)
+local point = { x = 0, y = 0 }
+local registry = {}
+
+local function makeEnv(withFs)
   registry = {}
-  local timers = {}
+  point.x, point.y = 0, 0
 
   local lvgl = {}
-  lvgl.HOR_RES = 336
-  lvgl.VER_RES = 480
-  lvgl.FLAG = { SCROLLABLE = 16, CLICKABLE = 2, EVENT_BUBBLE = 16384, HIDDEN = 1, SCROLL_ELASTIC = 32, SCROLL_MOMENTUM = 64 }
-  lvgl.ALIGN = { CENTER = 9, TOP_MID = 2, TOP_RIGHT = 3, TOP_LEFT = 1, BOTTOM_MID = 5, BOTTOM_LEFT = 4 }
-  lvgl.EVENT = { CLICKED = 7, SHORT_CLICKED = 4, LONG_PRESSED = 5, VALUE_CHANGED = 30, READY = 33, CANCEL = 34 }
-  lvgl.STATE = { FOCUSED = 2 }
-  lvgl.LABEL_LONG = { DOT = 1, WRAP = 2, SCROLL = 3 }
-  lvgl.SCROLLBAR_MODE = { AUTO = 3, OFF = 0 }
+  lvgl.HOR_RES = function() return 336 end
+  lvgl.VER_RES = function() return 480 end
+  lvgl.FLAG = { SCROLLABLE = 16, CLICKABLE = 2, EVENT_BUBBLE = 16384, HIDDEN = 1 }
+  lvgl.ALIGN = { CENTER = 9, TOP_MID = 2, TOP_RIGHT = 3 }
+  lvgl.EVENT = { CLICKED = 7, SHORT_CLICKED = 4 }
+  lvgl.BUILTIN_FONT = {
+    DEFAULT = { name = "default" }, MONTSERRAT_14 = { name = "m14" },
+    MONTSERRAT_16 = { name = "m16" }, MONTSERRAT_18 = { name = "m18" },
+    MONTSERRAT_24 = { name = "m24" }, MONTSERRAT_32 = { name = "m32" },
+  }
 
   local function newObj(parent, props)
     local o = {
       _parent = parent, _props = props or {}, _children = {},
-      _flags = {}, _handlers = {}, _states = {}, _deleted = false,
+      _flags = {}, _handlers = {}, _deleted = false,
       _text = (props and props.text) or "",
     }
     function o:set(p)
@@ -48,14 +52,9 @@ local function makeStubEnv(withFs)
     end
     function o:add_flag(f) self._flags[f] = true end
     function o:clear_flag(f) self._flags[f] = nil end
-    function o:add_state(s) self._states[s] = true end
-    function o:clear_state(s) self._states[s] = nil end
     function o:onevent(code, cb) self._handlers[code] = cb; return self end
-    function o:onClicked(cb) self._handlers[lvgl.EVENT.CLICKED] = cb; return self end
     function o:delete() self._deleted = true end
-    function o:scroll_to() end
-    function o:get_text() return self._text end
-    function o:get_child(i) return (self._children or {})[i] end
+    function o:is_visible() return not self._props.hidden end
     if parent and parent._children then table.insert(parent._children, o) end
     table.insert(registry, o)
     return o
@@ -63,38 +62,20 @@ local function makeStubEnv(withFs)
 
   lvgl.Object = function(parent, props) return newObj(parent, props) end
   lvgl.Label = function(parent, props) return newObj(parent, props) end
-  lvgl.Textarea = function(parent, props) return newObj(parent, props) end
-  lvgl.Keyboard = function(parent, props) return newObj(parent, props) end
-  lvgl.Font = function(name, size, weight)
-    return { name = name, size = size, weight = weight }
-  end
-  lvgl.Timer = function(props)
-    local t = { _props = props or {}, _paused = false }
-    function t:pause() self._paused = true end
-    function t:resume() self._paused = false end
-    function t:set(p) for k, v in pairs(p or {}) do self._props[k] = v end end
-    function t:ready() if not self._paused and self._props.cb then self._props.cb(t) end end
-    function t:delete() end
-    table.insert(timers, t)
-    return t
-  end
+  lvgl.indev = {
+    get_act = function()
+      return { get_point = function() return point.x, point.y end }
+    end,
+  }
 
   if withFs then
-    -- 内存文件系统（目录树 + 扁平路径索引）
     local tree = {
-      ["/"] = { tmp = "d", data = "d", etc = "d", ["readme.txt"] = "f" },
+      ["/"] = { data = "d", tmp = "d", etc = "d" },
+      ["/data"] = { app = "d", ["notes.txt"] = "f", ["report.txt"] = "f" },
+      ["/data/app"] = { ["config.json"] = "f" },
       ["/tmp"] = { ["deepscan_smoke.bin"] = "f" },
-      ["/data"] = {},
       ["/etc"] = {},
     }
-    local sizes = { ["/readme.txt"] = 1234, ["/tmp/deepscan_smoke.bin"] = 77 }
-    local kinds = { ["/"] = "d", ["/tmp"] = "d", ["/data"] = "d", ["/etc"] = "d" }
-    for dir, entries in pairs(tree) do
-      for name, kind in pairs(entries) do
-        local p = dir == "/" and ("/" .. name) or (dir .. "/" .. name)
-        kinds[p] = kind
-      end
-    end
     lvgl.fs = {}
     function lvgl.fs.open_dir(path)
       local t = tree[path]
@@ -104,27 +85,31 @@ local function makeStubEnv(withFs)
       table.sort(keys)
       local i = 0
       return {
-        read = function()
-          i = i + 1
-          return keys[i]
-        end,
+        read = function() i = i + 1; return keys[i] end,
         close = function() return true end,
       }
     end
     function lvgl.fs.open_file(path, mode)
-      if kinds[path] ~= "f" and mode ~= "w" then return nil end
+      local isFile = false
+      for dir, entries in pairs(tree) do
+        for name in pairs(entries) do
+          local p = dir == "/" and ("/" .. name) or (dir .. "/" .. name)
+          if p == path then isFile = true end
+        end
+      end
+      if not isFile and mode ~= "w" then return nil end
       return {
-        read = function(self, n)
-          local content = "fake-content-" .. (sizes[path] or 0)
-          if n == "*a" then return content end
-          if type(n) == "number" then return string.sub(content, 1, n) end
-          return content
+        read = function(_, n)
+          local c = "fake-content"
+          if n == "*a" then return c end
+          if type(n) == "number" then return string.sub(c, 1, n) end
+          return c
         end,
-        seek = function(self, whence, offset)
-          if whence == "end" then return sizes[path] or 0 end
+        seek = function(_, whence)
+          if whence == "end" then return 1234 end
           return 0
         end,
-        write = function(self, d) return #d end,
+        write = function(_, d) return #d end,
         close = function() return true end,
       }
     end
@@ -132,195 +117,172 @@ local function makeStubEnv(withFs)
     lvgl.fs = nil
   end
 
-  -- dataman 打桩
   local dataman = {}
   local subs = {}
   function dataman.subscribe(key, obj, cb)
     subs[#subs + 1] = { key = key, obj = obj, cb = cb }
     return #subs
   end
-  function dataman.pause(t) end
-  function dataman.resume(t) end
-
-  local vibrator = { type = { WATCH_FACE = 0 } }
-  function vibrator.start(t, once) end
+  function dataman.pause() end
+  function dataman.resume() end
 
   package.loaded.lvgl = lvgl
   package.loaded.dataman = dataman
-  package.loaded.vibrator = vibrator
 
   return {
     lvgl = lvgl,
     registry = registry,
-    timers = timers,
-    dataman = dataman,
     fire = function(key, value)
       for _, s in ipairs(subs) do
         if s.key == key then s.cb(s.obj, value) end
       end
     end,
-    click = function(o) if o and o._handlers[lvgl.EVENT.CLICKED] then o._handlers[lvgl.EVENT.CLICKED](o) end end,
-    findObj = function(pred)
-      for _, o in ipairs(registry) do
-        if pred(o) then return o end
+    tap = function(o, x, y)
+      point.x, point.y = x, y
+      if o and o._handlers[lvgl.EVENT.SHORT_CLICKED] then
+        o._handlers[lvgl.EVENT.SHORT_CLICKED](o)
+      elseif o and o._handlers[lvgl.EVENT.CLICKED] then
+        o._handlers[lvgl.EVENT.CLICKED](o)
       end
     end,
-    -- 找到文本标签所属的按钮/行对象
-    findParentBtn = function(lbl)
-      if not lbl then return nil end
+    findText = function(t)
       for _, o in ipairs(registry) do
-        if o._children and o._children[1] == lbl then return o end
+        if o._text == t then return o end
       end
       return nil
     end,
-    reset = function()
-      registry = {}
-      for k in pairs(package.loaded) do
-        if k == "utils" or k == "config" or k == "theme" or k == "databind"
-          or k == "watchface" or k == "filemanager" or k == "main" then
-          package.loaded[k] = nil
-        end
+    findTextContains = function(t)
+      for _, o in ipairs(registry) do
+        if o._text:find(t, 1, true) then return o end
       end
+      return nil
+    end,
+    clickables = function()
+      local out = {}
+      for _, o in ipairs(registry) do
+        if o._handlers[lvgl.EVENT.CLICKED] then out[#out + 1] = o end
+      end
+      return out
+    end,
+    -- 依据标签的屏幕坐标点击（行标签 props.y 为其行内位置）
+    tapByLabel = function(fmPage, text, xoff)
+      local lbl = nil
+      for _, o in ipairs(registry) do
+        if o._text == text then lbl = o; break end
+      end
+      if not lbl then return false end
+      local x = (lbl._props.x or 0) + (xoff or 20)
+      local y = (lbl._props.y or 0) + 9
+      point.x, point.y = x, y
+      if fmPage._handlers[lvgl.EVENT.SHORT_CLICKED] then
+        fmPage._handlers[lvgl.EVENT.SHORT_CLICKED](fmPage)
+      end
+      return true
+    end,
+    -- 键盘按键：面板在 (8,16)，按键 label 坐标为面板内坐标
+    tapKey = function(fmPage, ch)
+      local lbl = nil
+      for _, o in ipairs(registry) do
+        if o._text == ch then lbl = o; break end
+      end
+      if not lbl then return false end
+      local x = 8 + (lbl._props.x or 0) + (lbl._props.w or 30) / 2
+      local y = 16 + (lbl._props.y or 0) + (lbl._props.h or 32) / 2
+      point.x, point.y = x, y
+      if fmPage._handlers[lvgl.EVENT.SHORT_CLICKED] then
+        fmPage._handlers[lvgl.EVENT.SHORT_CLICKED](fmPage)
+      end
+      return true
     end,
   }
 end
 
--- ============ 阶段 0：main.lua 入口（顶层构建） ============
+-- ============ 阶段 0：入口加载 + 表盘渲染 ============
 print("== Phase 0: main.lua entry (top-level build) ==")
-local env = makeStubEnv(true)
-local rootA = env.lvgl.Object(nil, {})
+local env = makeEnv(true)
 local okMain, mainMod = pcall(dofile, ROOT .. "lua/main.lua")
 check(okMain, "main.lua loads without error (top-level build)")
-check(type(mainMod) == "table", "main.lua returns module table")
-check(type(mainMod.init) == "function", "ui.init exported")
+check(type(mainMod) == "table" and type(mainMod.init) == "function", "returns ui table with init")
+check(type(ScreenStateChangedCB) == "function", "ScreenStateChangedCB exported")
 local r = mainMod.init("dark")
-check(r ~= nil, "ui.init returns root (idempotent)")
-local clock = env.findObj(function(o) return o._text == "--:--" end)
-check(clock ~= nil, "watchface UI built at top level")
-pcall(mainMod.pageOnPause)
-pcall(mainMod.pageOnResume)
-check(true, "pageOnPause/pageOnResume no crash")
-pcall(function() mainMod.ScreenStateChangedCB("ON", "OFF", 0) end)
-pcall(function() mainMod.ScreenStateChangedCB("OFF", "ON", 0) end)
-check(true, "ScreenStateChangedCB no crash")
-env.reset()
+check(r ~= nil, "ui.init returns root")
 
--- ============ 阶段 A：表盘主界面 ============
-print("== Phase A: watchface UI ==")
-env = makeStubEnv(true)
-local ok, wf = pcall(dofile, ROOT .. "lua/watchface.lua")
-check(ok, "watchface.lua loads")
-check(type(wf.create) == "function", "watchface.create exists")
+check(env.findText("--:--") ~= nil, "watchface time label built at top level")
+check(env.findText("DEEP_SCAN") ~= nil, "brand label built")
 
-local opened = false
-wf.create(rootA, function() opened = true end)
-env.fire("timeHourLow", 7 * 256)
-env.fire("timeHourHigh", 1 * 256)
-env.fire("timeMinuteLow", 5 * 256)
-env.fire("timeMinuteHigh", 3 * 256)
-local timeLabel = env.findObj(function(o) return o._text == "17:35" end)
-check(timeLabel ~= nil, "time label renders HH:MM from digit sources")
-env.fire("healthStepCount", 12345 * 256)
-local stepLabel = env.findObj(function(o) return o._text:find("12,345") ~= nil end)
-check(stepLabel ~= nil, "step count renders with thousands separator")
+-- 数据订阅渲染
+env.fire("timeHour", 17 * 256)
+env.fire("timeMinute", 35 * 256)
+check(env.findText("17:35") ~= nil, "time renders HH:MM")
+env.fire("timeSecond", 9 * 256)
+check(env.findText("09") ~= nil, "seconds render")
 env.fire("systemStatusBattery", 87 * 256)
-local batLabel = env.findObj(function(o) return o._text:find("87%%") ~= nil end)
-check(batLabel ~= nil, "battery renders")
+check(env.findTextContains("87%") ~= nil, "battery renders")
+env.fire("healthStepCount", 12345 * 256)
+check(env.findTextContains("12345") ~= nil, "steps render")
 env.fire("healthHeartRate", 150 * 256)
-local hrLabel = env.findObj(function(o) return o._text == "150" end)
-check(hrLabel ~= nil, "heart rate renders")
-pcall(function() wf.pageOnPause() end)
-pcall(function() wf.pageOnResume() end)
-check(true, "pageOnPause/pageOnResume no crash")
-pcall(function() wf.show() end)
-pcall(function() wf.hide() end)
-check(true, "show/hide no crash")
-env.reset()
+check(env.findTextContains("150") ~= nil, "heart rate renders")
+pcall(function() ScreenStateChangedCB("ON", "OFF", 0) end)
+pcall(function() ScreenStateChangedCB("OFF", "ON", 0) end)
+check(true, "ScreenStateChangedCB no crash")
 
--- ============ 阶段 B：文件管理器（lvgl.fs，懒加载 + 点击键盘） ============
-print("== Phase B: file manager with lvgl.fs ==")
+-- ============ 阶段 A：打开文件管理器 + 浏览 ============
+print("== Phase A: file manager browse ==")
+local watchPage = env.clickables()[1]
+check(watchPage ~= nil, "watch page clickable")
+env.tap(watchPage, 168, 400) -- 下半屏 → 打开文件管理器
+local fmPage = env.clickables()[2]
+check(fmPage ~= nil, "file manager page built on tap")
+check(env.findTextContains("search: deep scan") ~= nil, "fm search bar present")
+check(env.findText("> app") ~= nil, "fm lists /data/app dir")
+check(env.findText("notes.txt") ~= nil, "fm lists /data/notes.txt")
+
+-- ============ 阶段 B：递归搜索 ============
+print("== Phase B: deep search ==")
+-- 先回到根目录（".." 行）
+check(env.tapByLabel(fmPage, "> .."), "found '..' row")
+check(env.findText("> tmp") ~= nil, "root lists /tmp")
+-- 打开搜索栏（y 56..96）
+env.tap(fmPage, 100, 76)
+for _, ch in ipairs({ "N", "O", "T", "E", "S" }) do
+  check(env.tapKey(fmPage, ch), "tap key " .. ch)
+end
+check(env.findTextContains("search: NOTES") ~= nil, "keyword typed")
+check(env.tapKey(fmPage, "RUN"), "tap RUN")
+check(env.findText("/data/notes.txt") ~= nil, "recursive search finds /data/notes.txt from /")
+
+-- ============ 阶段 C：删除文件 ============
+print("== Phase C: delete file ==")
+-- 退出搜索（顶栏 < 按钮，x<56, y<56）
+env.tap(fmPage, 20, 30)
+check(env.findText("> tmp") ~= nil, "back to browse root")
+-- 创建真实文件用于删除验证
 local realFile = "/tmp/deepscan_smoke.bin"
 local rf = io.open(realFile, "wb")
 rf:write("hello smoke")
 rf:close()
+check(io.open(realFile, "r") ~= nil, "real smoke file created")
 
-env = makeStubEnv(true)
-local ok, fm = pcall(dofile, ROOT .. "lua/filemanager.lua")
-check(ok, "filemanager.lua loads")
-local wentBack = false
-fm.create(rootA, function() wentBack = true end)
--- 懒加载：create 不访问文件系统；show() 才列出目录
-local rowsAtCreate = 0
-for _, o in ipairs(env.registry) do
-  if o._handlers[env.lvgl.EVENT.CLICKED] and o._text == "" then rowsAtCreate = rowsAtCreate + 1 end
-end
-check(true, "create does not crash (lazy init)")
-fm:show()
-local pathLbl = env.findObj(function(o) return o._text == "/" end)
-check(pathLbl ~= nil, "root path shown after show()")
-local tmpRowLbl = env.findObj(function(o) return o._text:find("> tmp") ~= nil end)
-check(tmpRowLbl ~= nil, "root listing contains 'tmp' dir")
-local tmpRow = env.findParentBtn(tmpRowLbl)
-check(tmpRow ~= nil, "found clickable tmp row")
--- 进入 /tmp
-env.click(tmpRow)
-local pathTmp = env.findObj(function(o) return o._text == "/tmp" end)
-check(pathTmp ~= nil, "navigate into /tmp")
--- 点文件行 → 详情弹窗（大小按需读取）
-local fileRowLbl = env.findObj(function(o) return o._text:find("deepscan_smoke") ~= nil end)
-check(fileRowLbl ~= nil, "/tmp lists the smoke file")
-local fileRow = env.findParentBtn(fileRowLbl)
-check(fileRow ~= nil, "found clickable file row")
-env.click(fileRow)
-local det = env.findObj(function(o) return o._text:find("size: 77 B") ~= nil end)
-check(det ~= nil, "file detail shows size")
--- 点 DELETE
-local delLbl = env.findObj(function(o) return o._text == "DELETE" end)
-local delBtn = env.findParentBtn(delLbl)
-check(delBtn ~= nil, "found DELETE button")
-env.click(delBtn)
+check(env.tapByLabel(fmPage, "> tmp"), "navigate into /tmp")
+check(env.findText("deepscan_smoke.bin") ~= nil, "/tmp lists smoke file")
+check(env.tapByLabel(fmPage, "deepscan_smoke.bin"), "open file detail")
+check(env.findText("DELETE?") ~= nil, "detail overlay shows")
+env.tap(fmPage, 300, 200) -- 右半屏 → DELETE
 local stillThere = io.open(realFile, "r")
 check(stillThere == nil, "DELETE removed the real file via os.remove")
 if stillThere then stillThere:close() end
--- 返回根目录（点 < 按钮）
-local backLbl = env.findObj(function(o) return o._text == "<" end)
-local backBtn = env.findParentBtn(backLbl)
-check(backBtn ~= nil, "found < back button")
-env.click(backBtn)
-local pathRoot = env.findObj(function(o) return o._text == "/" end)
-check(pathRoot ~= nil, "back to root")
 
--- 深度搜索：点击键盘输入 smoke → RUN
-local searchLbl = env.findObj(function(o) return o._text:find("^search:") ~= nil end)
-local searchBox = env.findParentBtn(searchLbl)
-check(searchBox ~= nil, "search box clickable")
-env.click(searchBox)
-for _, ch in ipairs({ "S", "M", "O", "K", "E" }) do
-  local keyLbl = env.findObj(function(o) return o._text == ch end)
-  local keyBtn = env.findParentBtn(keyLbl)
-  check(keyBtn ~= nil, "key button " .. ch)
-  if keyBtn then env.click(keyBtn) end
-end
-local kwShown = env.findObj(function(o) return o._text == "> SMOKE" end)
-check(kwShown ~= nil, "keyword display shows typed text")
-local runLbl = env.findObj(function(o) return o._text == "RUN" end)
-local runBtn = env.findParentBtn(runLbl)
-check(runBtn ~= nil, "RUN button found")
-env.click(runBtn)
-local sr = env.findObj(function(o) return o._text:find("deepscan_smoke") ~= nil end)
-check(sr ~= nil, "deep search finds smoke file from /")
-env.reset()
-
--- ============ 阶段 C：无 lvgl.fs 时的 shell 退回 ============
-print("== Phase C: shell fallback without lvgl.fs ==")
-env = makeStubEnv(false)
-local ok, fm2 = pcall(dofile, ROOT .. "lua/filemanager.lua")
-check(ok, "filemanager.lua loads without lvgl.fs")
-fm2.create(rootA, function() end)
-fm2:show()
-local anyRow = env.findObj(function(o) return o._text:find("^> ") ~= nil end)
-check(anyRow ~= nil, "root listing works via os.execute ls fallback")
-env.reset()
+-- ============ 阶段 D：无 lvgl.fs 降级 ============
+print("== Phase D: degrade without lvgl.fs ==")
+env = makeEnv(false)
+local ok2 = pcall(dofile, ROOT .. "lua/main.lua")
+check(ok2, "main.lua loads without lvgl.fs")
+check(env.findText("--:--") ~= nil, "watchface still builds without fs")
+local wp2 = env.clickables()[1]
+env.tap(wp2, 168, 400)
+local fp2 = env.clickables()[2]
+check(fp2 ~= nil, "file manager page built without fs")
+check(env.findTextContains("cannot open") ~= nil, "graceful 'cannot open' without fs api")
 
 -- ============ 汇总 ============
 print(string.format("== result: %d failure(s) ==", failures))

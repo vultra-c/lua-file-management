@@ -23,15 +23,11 @@ function loadConfig() {
   return JSON.parse(readFileSync(join(root, "watchface.config.json"), "utf8"));
 }
 
-function listLua() {
-  const dir = join(root, "lua");
-  const names = readdirSync(dir)
-    .filter((n) => n.endsWith(".lua"))
-    .sort((a, b) => (a === "main.lua" ? -1 : b === "main.lua" ? 1 : a < b ? -1 : 1));
-  return names.map((n) => {
-    const data = readFileSync(join(dir, n));
-    return { name: `_lua/${n}`, data };
-  });
+// 单文件入口：lua/main.lua → _lua/<slug>/<slug>.lua（与官方 9 Pro 样本 / Monika 一致）
+function listLuaFiles(projectName) {
+  const slug = String(projectName || "watchface").toLowerCase();
+  const data = readFileSync(join(root, "lua", "main.lua"));
+  return [{ name: `_lua/${slug}/${slug}.lua`, data }];
 }
 
 // ---- 预览图像素绘制（终端风格，等比缩放）----
@@ -92,7 +88,7 @@ function main() {
   const cfg = loadConfig();
   const projectName = String(cfg.projectName || "watchface");
   const watchfaceId = String(cfg.watchfaceId || "");
-  const files = listLua();
+  const files = listLuaFiles(projectName);
   if (files.length === 0) {
     console.error("error: no lua files found in lua/");
     process.exit(1);
@@ -100,15 +96,18 @@ function main() {
 
   const previewRgba = renderPreviewRgba(PREVIEW_W, PREVIEW_H);
 
+  const luaEntryIndex = 0; // 入口文件是唯一文件，位于 TOC 索引 0
   const { face, records, payloadEnd, previewOffset } = buildFace(files, {
     id: watchfaceId,
     title: projectName,
     previewRgba,
+    luaEntryIndex,
   });
 
   // 自校验：重新解析并比对
   const parsed = parseFace(face);
   if (parsed.id !== watchfaceId) throw new Error(`verify failed: id ${parsed.id} != ${watchfaceId}`);
+  if (parsed.luaEntryIndex !== luaEntryIndex) throw new Error(`verify failed: luaEntryIndex ${parsed.luaEntryIndex} != ${luaEntryIndex}`);
   if (parsed.previewOffset !== previewOffset) throw new Error(`verify failed: preview offset`);
   if (!parsed.preview) throw new Error(`verify failed: preview block missing/invalid`);
   if (parsed.preview.width !== PREVIEW_W || parsed.preview.height !== PREVIEW_H)
@@ -137,7 +136,7 @@ function main() {
 
   console.log("built:", facePath, `(${face.length} bytes)`);
   console.log("copy :", resourcePath);
-  console.log(`face : ${projectName}.face  id=${watchfaceId}  files=${records.length}`);
+  console.log(`face : ${projectName}.face  id=${watchfaceId}  files=${records.length}  luaEntryIndex=${luaEntryIndex}`);
   console.log(`preview: ${PREVIEW_W}x${PREVIEW_H} @ ${previewOffset} (${parsed.preview.blockLen} bytes, RLE ok)`);
   for (const r of records) {
     console.log(`  - ${r.name} (${r.size - 20 - r.name.length} bytes)`);
