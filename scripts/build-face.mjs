@@ -30,15 +30,16 @@ function listLuaFiles(projectName) {
   return [{ name: `_lua/${slug}/${slug}.lua`, data }];
 }
 
-// ---- 预览图像素绘制（终端风格，等比缩放）----
-const BG = [7, 9, 13];
-const SURFACE = [15, 20, 27];
-const BORDER = [34, 48, 66];
-const GREEN = [55, 224, 164];
-const GREEN_DIM = [30, 138, 102];
-const CYAN = [76, 201, 240];
-const TEXT = [230, 237, 245];
-const DIM = [138, 151, 168];
+// ---- 预览图像素绘制（简洁文件管理器风格，等比缩放）----
+// 与 lua/main.lua 的浅色主题保持一致
+const BG = [246, 247, 249]; // 0xF6F7F9
+const HEADER = [255, 255, 255]; // 0xFFFFFF
+const TEXT = [27, 31, 39]; // 0x1B1F27
+const DIM = [138, 148, 166]; // 0x8A94A6
+const DIR = [31, 111, 235]; // 0x1F6FEB
+const DEL = [229, 72, 77]; // 0xE5484D
+const DEL_BG = [252, 233, 234]; // 0xFCE9EA
+const SEP = [230, 233, 239]; // 0xE6E9EF
 
 function renderPreviewRgba(w, h) {
   const px = Buffer.alloc(w * h * 4, 0);
@@ -62,25 +63,38 @@ function renderPreviewRgba(w, h) {
   const sy = h / 480;
 
   fill(0, 0, w, h, BG);
-  fill(16 * sx, 14 * sy, 46 * sx, 5 * sy, DIM); // 电量
-  fill(272 * sx, 14 * sy, 52 * sx, 5 * sy, GREEN_DIM); // 品牌
-  fill(140 * sx, 48 * sy, 56 * sx, 4 * sy, DIM); // 日期
-  fill(104 * sx, 138 * sy, 128 * sx, 52 * sy, SURFACE); // 时间块
-  fill(120 * sx, 150 * sy, 40 * sx, 18 * sy, TEXT);
-  fill(166 * sx, 150 * sy, 22 * sx, 18 * sy, TEXT);
-  fill(196 * sx, 150 * sy, 6 * sx, 18 * sy, GREEN_DIM);
-  fill(206 * sx, 150 * sy, 28 * sx, 18 * sy, TEXT);
-  fill(152 * sx, 214 * sy, 32 * sx, 4 * sy, CYAN); // 秒
-  fill(20 * sx, 252 * sy, (w - 40) * sx, 1, BORDER); // 分隔线
-  fill(12 * sx, 272 * sy, (w - 24) * sx, 188 * sy, SURFACE); // 终端卡片
-  fill(12 * sx, 272 * sy, (w - 24) * sx, 2, GREEN_DIM); // 顶部描边
-  fill(12 * sx, 458 * sy, (w - 24) * sx, 2, GREEN_DIM); // 底部描边
-  fill(14 * sx, 282 * sy, 130 * sx, 4 * sy, GREEN); // 标题行
-  fill(24 * sx, 308 * sy, 120 * sx, 5 * sy, TEXT); // steps
-  fill(24 * sx, 336 * sy, 120 * sx, 5 * sy, TEXT); // hr
-  fill(24 * sx, 364 * sy, 96 * sx, 4 * sy, DIM); // fs
-  fill(26 * sx, 420 * sy, 160 * sx, 5 * sy, GREEN); // CTA
-  fill((296) * sx, 420 * sy, 6 * sx, 6 * sy, GREEN); // 光标
+
+  // 顶部白色标题栏：返回 / 路径 / 首页
+  fill(0, 0, w, 56 * sy, HEADER);
+  fill(0, 56 * sy, w, 1, SEP);
+  fill(24 * sx, 22 * sy, 12 * sx, 16 * sy, DIR); // <
+  fill(300 * sx, 22 * sy, 12 * sx, 16 * sy, DIR); // /
+  fill(56 * sx, 26 * sy, 224 * sx, 10 * sy, TEXT); // 路径
+
+  // 文件/文件夹行：左名称 + 右 DEL 按钮 + 分隔线
+  const rows = [
+    { dir: true }, // app/
+    { dir: false }, // notes.txt
+    { dir: false }, // report.txt
+    { dir: true }, // config/
+    { dir: false }, // data.json
+  ];
+  const rowH = 50 * sy;
+  const listTop = 62 * sy;
+  for (let i = 0; i < rows.length; i++) {
+    const y = listTop + i * rowH;
+    const c = rows[i].dir ? DIR : TEXT;
+    fill(20 * sx, y + 16 * sy, 150 * sx, 14 * sy, c); // 名称
+    fill(260 * sx, y + 10 * sy, 56 * sx, rowH - 20 * sy, DEL_BG); // DEL 底
+    fill(266 * sx, y + 17 * sy, 44 * sx, 12 * sy, DEL); // DEL 文字
+    fill(16 * sx, y + rowH - 1, w - 32 * sx, 1, SEP); // 分隔线
+  }
+
+  // 底部分页：上一页 / 页码 / 下一页
+  fill(8 * sx, 422 * sy, 90 * sx, 34 * sy, HEADER);
+  fill(238 * sx, 422 * sy, 90 * sx, 34 * sy, HEADER);
+  fill(120 * sx, 434 * sy, 96 * sx, 10 * sy, DIM);
+
   return px;
 }
 
