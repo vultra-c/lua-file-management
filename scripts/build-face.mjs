@@ -4,7 +4,7 @@
 // 产物：bin/<projectName>.face + bin/resource.bin（模拟器安装用，与 LuaDevTemplate 一致）
 // 依赖：Node 18+ / Bun，无第三方包。
 
-import { readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,25 +23,39 @@ function loadConfig() {
   return JSON.parse(readFileSync(join(root, "watchface.config.json"), "utf8"));
 }
 
+// 原生应用注入载荷：payload/module.ko 存在时，作为字节串嵌入到入口脚本头部。
+// 生成一个全局 PAYLOAD（Lua 字符串字面量，逐字节 \xNN 转义，避免引号/反斜杠问题）。
+function payloadChunk() {
+  const p = join(root, "payload", "module.ko");
+  if (!existsSync(p)) {
+    return "-- no embedded native payload (drop payload/module.ko to embed)\nPAYLOAD = nil\n";
+  }
+  const buf = readFileSync(p);
+  let esc = "";
+  for (const b of buf) esc += "\\x" + b.toString(16).padStart(2, "0");
+  return `-- embedded native payload (${buf.length} bytes)\nPAYLOAD = "${esc}"\n`;
+}
+
 // 单文件入口：lua/main.lua → _lua/<slug>/<slug>.lua（与官方 9 Pro 样本 / Monika 一致）
 function listLuaFiles(projectName) {
   const slug = String(projectName || "watchface").toLowerCase();
-  const data = readFileSync(join(root, "lua", "main.lua"));
+  const src = readFileSync(join(root, "lua", "main.lua"));
+  const data = Buffer.concat([Buffer.from(payloadChunk(), "utf8"), src]);
   return [{ name: `_lua/${slug}/${slug}.lua`, data }];
 }
 
-// ---- 预览图像素绘制（简洁文件管理器风格，等比缩放）----
-// 与 lua/main.lua 的浅色主题保持一致
-const BG = [244, 245, 247]; // 0xF4F5F7
-const HEADER = [255, 255, 255]; // 0xFFFFFF
-const TEXT = [27, 32, 41]; // 0x1B2029
-const DIM = [138, 148, 166]; // 0x8A94A6
-const DIR = [47, 111, 237]; // 0x2F6FED
-const FILE = [58, 69, 84]; // 0x3A4554
-const DEL = [229, 72, 77]; // 0xE5484D
-const DEL_BG = [253, 235, 236]; // 0xFDEBEC
-const SEP = [233, 237, 242]; // 0xE9EDF2
-const BTN = [238, 241, 245]; // 0xEEF1F5
+// ---- 预览图像素绘制（原生深色系统 UI 风格，等比缩放）----
+// 与 lua/main.lua 的深色扁平列表保持一致
+const BG = [0, 0, 0]; // 0x000000
+const SURFACE = [17, 17, 19]; // 0x111113
+const TEXT = [255, 255, 255]; // 0xFFFFFF
+const DIM = [142, 142, 147]; // 0x8E8E93
+const ACCENT = [10, 132, 255]; // 0x0A84FF
+const DESTRUCTIVE = [255, 69, 58]; // 0xFF453A
+const DESTRUCTIVE_BG = [42, 17, 20]; // 0x2A1114
+const SEP = [28, 28, 30]; // 0x1C1C1E
+const BTN = [28, 28, 30]; // 0x1C1C1E
+const FILE_ICON = [58, 58, 60]; // 0x3A3A3C
 
 function renderPreviewRgba(w, h) {
   const px = Buffer.alloc(w * h * 4, 0);
@@ -66,41 +80,38 @@ function renderPreviewRgba(w, h) {
 
   fill(0, 0, w, h, BG);
 
-  // 顶部白色标题栏：返回 / 路径 / 信息
-  fill(0, 0, w, 56 * sy, HEADER);
-  fill(0, 56 * sy, w, 1, SEP);
-  fill(20 * sx, 24 * sy, 12 * sx, 10 * sy, DIR); // <
-  fill(52 * sx, 24 * sy, 200 * sx, 10 * sy, TEXT); // 路径
-  fill(302 * sx, 26 * sy, 8 * sx, 10 * sy, DIR); // i
+  // 顶部标题栏：返回 < + Files + 路径面包屑 + i
+  fill(0, 0, w, 64 * sy, BG);
+  fill(0, 64 * sy, w, 1, SEP);
+  fill(18 * sx, 26 * sy, 12 * sx, 10 * sy, TEXT); // <
+  fill(52 * sx, 14 * sy, 40 * sx, 12 * sy, TEXT); // Files
+  fill(52 * sx, 36 * sy, 190 * sx, 8 * sy, DIM);  // 路径
+  fill(300 * sx, 28 * sy, 8 * sx, 8 * sy, DIM);   // i
 
-  // 文件/文件夹行：圆点 + 名称 + 右 DEL 按钮
-  const rows = [
-    { dir: true }, // app/
-    { dir: false }, // notes.txt
-    { dir: false }, // report.txt
-    { dir: true }, // config/
-    { dir: false }, // data.json
-    { dir: false }, // readme.md
-  ];
+  // 行：图标 + 名称 + 右 Delete
+  const rowKinds = [true, false, false, true, false, false];
   const rowH = 56 * sy;
-  const listTop = 62 * sy;
-  for (let i = 0; i < rows.length; i++) {
-    const y = listTop + i * rowH + 5 * sy;
-    const c = rows[i].dir ? DIR : FILE;
-    fill(12 * sx, y, w - 24 * sx, 46 * sy, HEADER); // 行卡片
-    fill(28 * sx, y + 19 * sy, 8 * sx, 8 * sy, c); // 左侧圆点
-    fill(44 * sx, y + 16 * sy, 150 * sx, 14 * sy, c); // 名称
-    fill(262 * sx, y + 8 * sy, 52 * sx, 30 * sy, DEL_BG); // DEL 底
-    fill(274 * sx, y + 17 * sy, 28 * sx, 12 * sy, DEL); // DEL 文字
+  const listTop = 68 * sy;
+  for (let i = 0; i < rowKinds.length; i++) {
+    const y = listTop + i * rowH;
+    fill(20 * sx, y + rowH - 1, w - 40 * sx, 1, SEP); // 分隔线
+    if (rowKinds[i]) {
+      fill(20 * sx, y + 21 * sy, 8 * sx, 4 * sy, ACCENT);       // 文件夹凸起
+      fill(20 * sx, y + 24 * sy, 20 * sx, 14 * sy, ACCENT);     // 文件夹主体
+    } else {
+      fill(23 * sx, y + 19 * sy, 14 * sx, 18 * sy, FILE_ICON);  // 文件
+    }
+    fill(48 * sx, y + 20 * sy, 150 * sx, 14 * sy, TEXT);        // 名称
+    fill(w - 88 * sx, y + 12 * sy, 72 * sx, 32 * sy, DESTRUCTIVE_BG); // Delete 底
+    fill(w - 71 * sx, y + 21 * sy, 38 * sx, 12 * sy, DESTRUCTIVE);    // Delete 文字
   }
 
-  // 底部分页：上一页 / 页码 / 下一页 + 状态行
-  fill(0, 416 * sy, w, 1, SEP);
-  fill(0, 417 * sy, w, (480 - 417) * sy, HEADER);
-  fill(12 * sx, 426 * sy, 44 * sx, 30 * sy, BTN); // prev
-  fill(280 * sx, 426 * sy, 44 * sx, 30 * sy, BTN); // next
-  fill(146 * sx, 437 * sy, 44 * sx, 8 * sy, DIM); // 页码
-  fill(16 * sx, 460 * sy, w - 32 * sx, 6 * sy, DIM); // 状态
+  // 底栏：条目统计 + 分页
+  fill(0, 436 * sy, w, 1, SEP);
+  fill(16 * sx, 452 * sy, 150 * sx, 6 * sy, DIM);               // 统计
+  fill(w - 140 * sx, 442 * sy, 38 * sx, 32 * sy, BTN);          // prev
+  fill(w - 98 * sx, 450 * sy, 44 * sx, 8 * sy, DIM);            // 页码
+  fill(w - 54 * sx, 442 * sy, 38 * sx, 32 * sy, BTN);           // next
 
   return px;
 }

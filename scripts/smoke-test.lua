@@ -151,7 +151,7 @@ local function makeEnv(withFs)
       for _, o in ipairs(registry) do
         if not o._deleted and o._parent == nameBtn and o._children then
           for _, c in ipairs(o._children) do
-            if not c._deleted and c._text == "DEL" then return o end
+            if not c._deleted and c._text == "Delete" then return o end
           end
         end
       end
@@ -220,6 +220,61 @@ env = makeEnv(false)
 local ok2 = pcall(dofile, ROOT .. "lua/main.lua")
 check(ok2, "main.lua loads without lvgl.fs")
 check(env.findLabelContains("cannot open") ~= nil, "graceful 'cannot open' without fs api")
+
+-- ============ 阶段 D：能力面板 + 注入实验 ============
+print("== Phase D: capability panel + inject experiment ==")
+env = makeEnv(true)
+local ok3 = pcall(dofile, ROOT .. "lua/main.lua")
+check(ok3, "main.lua re-loads")
+check(env.tapBtn(env.nameBtnOf("i")), "tap i opens capability panel")
+check(env.findLabel("SYSTEM CAPABILITIES") ~= nil, "capability panel shows")
+local injBtn = env.nameBtnOf("INJECT")
+check(injBtn ~= nil, "found INJECT button")
+check(env.tapBtn(injBtn), "tap INJECT runs pipeline")
+check(env.findLabel("NATIVE INJECT") ~= nil, "inject result panel shows (no payload)")
+
+-- ============ 阶段 E：注入链路（insmod → lsmod 解析基址 → exec）============
+-- 打桩 os.execute / io.popen 模拟实机验证过的调用链，验证解析逻辑正确。
+print("== Phase E: injection chain (write -> insmod -> lsmod -> exec) ==")
+env = makeEnv(true)
+
+PAYLOAD = "fake .ko bytes"
+local realExecute = os.execute
+local realPopen = io.popen
+os.execute = function(cmd)
+  if cmd:find("insmod", 1, true) then
+    return true, "exit", 0
+  elseif cmd:find("exec ", 1, true) then
+    return true, "exit", 0
+  end
+  return true, "exit", 0
+end
+io.popen = function(cmd, mode)
+  if cmd:find("lsmod", 1, true) then
+    return {
+      read = function(_, n)
+        return "NAME INIT UNINIT ARG NEXPORTS TEXT SIZE DATA SIZE\n" ..
+               "deepscan 0 0 0 0x3D3B1D90 1000 500\n"
+      end,
+      close = function() return true end,
+    }
+  elseif cmd:find("mw ", 1, true) then
+    return { read = function() return "0x5EED0001" end, close = function() return true end }
+  end
+  return nil
+end
+
+local ok4 = pcall(dofile, ROOT .. "lua/main.lua")
+check(ok4, "main.lua loads with embedded payload + stubbed shell")
+check(env.tapBtn(env.nameBtnOf("i")), "tap i opens capability panel")
+check(env.tapBtn(env.nameBtnOf("INJECT")), "tap INJECT runs full chain")
+check(env.findLabel("NATIVE INJECT") ~= nil, "inject result panel shows")
+check(env.findLabelContains("base 0x3D3B1D90") ~= nil, "lsmod parsed module base 0x3D3B1D90")
+check(env.findLabelContains("exit 0") ~= nil, "insmod/exec returned clean exit 0")
+
+os.execute = realExecute
+io.popen = realPopen
+PAYLOAD = nil
 
 -- ============ 汇总 ============
 print(string.format("== result: %d failure(s) ==", failures))

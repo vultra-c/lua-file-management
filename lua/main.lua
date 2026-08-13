@@ -1,7 +1,9 @@
 -- ============================================================
 -- DeepScan — 小米手环 9 Pro 文件管理器表盘（336×480）
--- 简洁浅色主题：安装后直接进入文件管理器。
---   每行：左 = 彩色圆点 + 名称（文件夹蓝色带 / 后缀，文件深色），右 = 红色 DEL 删除按钮
+-- 原生深色系统 UI 风格（MiWear 扁平列表）：安装后直接进入文件管理器。
+--   顶栏：返回 + 标题 Files + 路径面包屑 + 能力探测(i)
+--   列表：全宽扁平行 + 细分隔线；左 = 文件夹/文件图标 + 名称，右 = 红色 Delete
+--   底栏：条目统计 + 分页
 --
 -- 入口约定（与 9 Pro 运行时 / Monika 一致）：
 --   * 顶层直接构建 UI
@@ -9,7 +11,7 @@
 --
 -- 点击可靠性：
 --   * 可点元素显式 add_flag(CLICKABLE) 并只注册 SHORT_CLICKED
---   * 子标签加 EVENT_BUBBLE，点击冒泡到父卡片/按钮
+--   * 子元素加 EVENT_BUBBLE，点击冒泡到父级
 --   * 文件系统 / 删除 / 能力探测全部 pcall 包裹
 -- ============================================================
 
@@ -26,27 +28,26 @@ local ROOT = "/"
 local LIST_CAP = 300
 local ROWS_PER_PAGE = 6
 local ROW_H = 56
-local HEADER_H = 56
+local HEADER_H = 64
+local FOOTER_H = 44
 local LIST_TOP = HEADER_H
-local FOOTER_H = 64
 local FOOTER_TOP = H - FOOTER_H
-local PAD_X = 12
-local CARD_W = W - PAD_X * 2
-local CARD_H = ROW_H - 10
+local NAME_X = 48
+local DEL_W = 72
+local DEL_H = 32
 
--- ---- 浅色简洁配色 ----
+-- ---- 原生深色配色（MiWear 系统 UI）----
 local C = {
-  BG = 0xF4F5F7,
-  CARD = 0xFFFFFF,
-  TEXT = 0x1B2029,
-  DIM = 0x8A94A6,
-  DIR = 0x2F6FED,
-  FILE = 0x3A4554,
-  DEL = 0xE5484D,
-  DEL_BG = 0xFDEBEC,
-  SEP = 0xE9EDF2,
-  OK = 0x1F9D6B,
-  BTN = 0xEEF1F5,
+  BG = 0x000000,           -- 纯黑背景
+  SURFACE = 0x111113,      -- 弹窗/卡片抬升面
+  TEXT = 0xFFFFFF,         -- 主文字
+  DIM = 0x8E8E93,          -- 次要文字
+  ACCENT = 0x0A84FF,       -- 系统蓝（文件夹/主色）
+  DESTRUCTIVE = 0xFF453A,  -- 系统红（删除）
+  DESTRUCTIVE_BG = 0x2A1114,
+  SEP = 0x1C1C1E,          -- 细分隔线
+  BTN = 0x1C1C1E,          -- 次级按钮底
+  FILE_ICON = 0x3A3A3C,    -- 文件图标
 }
 
 -- ---- 字体（仅用已验证尺寸 14/16/18/24/32）----
@@ -253,6 +254,258 @@ local pageIdx = 0
 -- 前向声明
 local navigate, goUp, render, showFileInfo, confirmDelete, doDelete, hideDialog, showInfo, hideInfo
 
+-- ---- 原生应用注入（ELF 注入闭环，已实机验证的调用链；pcall 保护，仅手动触发）----
+-- 验证过的完整链：写 .ko → insmod → lsmod 解析模块基址 → exec <base+1>。
+-- 关键机制（实机验证结论）：
+--   * insmod 只加载不执行；exec 以函数调用方式跳转，模块 pop{r7,pc} 干净返回
+--   * lsmod 列：NAME INIT UNINIT ARG NEXPORTS TEXT SIZE DATA SIZE，第 5 列 = 模块文本基址(textalloc)
+--   * exec 需 Thumb 位：跳 <base+1>
+--   * 固件 Lua 5.4 tonumber 不认 0x 前缀：需 tonumber(s:sub(3), 16)
+local INJECT = {
+  ko_path = "/data/deepscan_module.ko",  -- 写 .ko 的位置（/data 可写）
+  mod_name = "deepscan",                  -- insmod 的模块名（lsmod 按此名解析基址）
+  entry_offset = 1,                       -- exec <base+1>（Thumb 位）
+  marker_addr = 0x20001000,               -- 模块写入标记的地址，用 mw 验证（可选，nil 跳过）
+}
+
+-- os.execute 返回 (true, "exit", 0) / (nil, "exit", code)；统一成 success, detail
+local function shellExec(cmd)
+  if type(os.execute) ~= "function" then
+    return false, "no os.execute"
+  end
+  local r = { pcall(os.execute, cmd) }
+  local pcallOk = table.remove(r, 1)
+  if not pcallOk then
+    return false, tostring(r[1])
+  end
+  local flag, kind, code = r[1], r[2], r[3]
+  local success = (flag == true) and (code == 0 or code == nil)
+  return success, string.format("%s %s", tostring(kind or ""), tostring(code or ""))
+end
+
+-- 捕获命令输出：优先 io.popen，否则重定向到临时文件再读回（pcall 保护）
+local function shellCapture(cmd)
+  if io and type(io.popen) == "function" then
+    local ok, res = pcall(function()
+      local p = io.popen(cmd, "r")
+      if not p then error("popen failed") end
+      local out = p:read("*a")
+      p:close()
+      return out
+    end)
+    if ok and type(res) == "string" then return true, res end
+  end
+  local tmp = INJECT.ko_path .. ".out"
+  shellExec(cmd .. " > " .. tmp .. " 2>&1")
+  local f = openFile(tmp, "r")
+  if not f then return false, "cannot capture output" end
+  local out = nil
+  pcall(function() out = f:read("*a") end)
+  pcall(function() f:close() end)
+  pcall(function() os.remove(tmp) end)
+  return type(out) == "string", out or ""
+end
+
+-- 解析十六进制：固件 tonumber 不认 0x 前缀，手动剥离
+local function parseHex(s)
+  s = tostring(s or ""):gsub("%s+", "")
+  if s:sub(1, 2) == "0x" or s:sub(1, 2) == "0X" then
+    return tonumber(s:sub(3), 16)
+  end
+  return tonumber(s, 16)
+end
+
+-- 从 lsmod 输出解析模块基址：模块名所在行的第 5 列（textalloc）
+local function lsmodBase(out, modName)
+  for line in tostring(out or ""):gmatch("[^\r\n]+") do
+    local toks = {}
+    for t in line:gmatch("%S+") do toks[#toks + 1] = t end
+    if toks[1] == modName then
+      local base = parseHex(toks[5])
+      if base then return base end
+    end
+  end
+  return nil
+end
+
+local function injectWritePayload()
+  if not PAYLOAD or #PAYLOAD == 0 then return false, "no embedded payload" end
+  local ok, err = pcall(function()
+    local f = io.open(INJECT.ko_path, "wb")
+    if not f and lvgl.fs and type(lvgl.fs.open_file) == "function" then
+      f = lvgl.fs.open_file(INJECT.ko_path, "w")
+    end
+    if not f then error("open failed") end
+    f:write(PAYLOAD)
+    f:close()
+  end)
+  return ok, err
+end
+
+local function runInject()
+  local lines = {}
+  local function step(tag, ok, detail)
+    lines[#lines + 1] = string.format("%-8s %s", tag, ok and "OK" or "FAIL")
+    if detail ~= nil and detail ~= true and detail ~= "" then
+      lines[#lines + 1] = "   " .. tostring(detail)
+    end
+  end
+
+  -- 1) 写 .ko 到可写分区
+  local ok1, e1 = injectWritePayload()
+  step("write", ok1, ok1 and nil or e1)
+  if not ok1 then
+    showInfo("NATIVE INJECT", table.concat(lines, "\n"), "embed payload/module.ko then rebuild")
+    return
+  end
+
+  -- 2) insmod 加载（只加载，不执行入口）
+  local ok2, d2 = shellExec("insmod " .. INJECT.ko_path .. " " .. INJECT.mod_name)
+  step("insmod", ok2, d2)
+
+  -- 3) lsmod 现场解析模块基址
+  local ok3, out3 = shellCapture("lsmod")
+  local base = ok3 and lsmodBase(out3, INJECT.mod_name) or nil
+  step("lsmod", base ~= nil, base and string.format("base 0x%X", base) or "base not found")
+
+  -- 4) exec <base+1> 执行入口
+  if base then
+    local entry = base + (INJECT.entry_offset or 1)
+    local ok4, d4 = shellExec(string.format("exec 0x%X", entry))
+    step("exec", ok4, d4)
+  else
+    step("exec", false, "no base")
+  end
+
+  -- 5) 可选：mw 验证模块写入的标记
+  if INJECT.marker_addr then
+    local ok5, out5 = shellCapture(string.format("mw 0x%X", INJECT.marker_addr))
+    step("verify", ok5, ok5 and (tostring(out5):gsub("%s+$", "")) or nil)
+  end
+
+  showInfo("NATIVE INJECT", table.concat(lines, "\n"), "chain: write -> insmod -> lsmod -> exec")
+end
+
+-- ---- 运行时逆向采集（RE DUMP）----
+-- 固件加密导致静态分析死路；唯一可行路径是运行时逆向。此按钮把 re/README 里
+-- P1/P2/P3 需要的设备样本就地采集到 /data/deepscan_re/，之后用本表盘文件管理器
+-- 逐条查看并把内容发回来即可。全部 pcall 保护，任何单条失败都不影响其余项。
+local REDUMP = {
+  dir = "/data/deepscan_re", -- 采集输出目录（/data 可写）
+  max_file = 65536,           -- 单个文本文件拷贝上限（字节）
+}
+
+-- 文本文件直接拷贝：应用注册表 + /proc 运行时信息
+local REDUMP_FILES = {
+  { "/data/apps.json",   "apps.json" },
+  { "/data/apps.db",     "apps.db" },
+  { "/data/persist.db",  "persist.db" },
+  { "/proc/modules",     "proc_modules.txt" },
+  { "/proc/version",     "proc_version.txt" },
+  { "/proc/kallsyms",    "proc_kallsyms.txt" },
+  { "/etc/passwd",       "etc_passwd.txt" },
+  { "/etc/group",        "etc_group.txt" },
+}
+
+-- 目录清单（Lua 原生列出，带类型 + 大小）
+local REDUMP_DIRS = {
+  "/", "/data", "/data/app", "/data/ota", "/usr", "/usr/lib", "/lib",
+  "/system", "/system/image", "/system/watchface", "/etc", "/mnt", "/tmp", "/dev",
+}
+
+-- shell 命令输出（os.execute 可用时）
+local REDUMP_CMDS = {
+  { "mount",     "mount.txt" },
+  { "uname -a",  "uname.txt" },
+  { "df",        "df.txt" },
+  { "ls -l /data", "ls_data.txt" },
+  { "ls -l /usr/lib", "ls_usrlib.txt" },
+}
+
+local function writeFile(path, data)
+  return pcall(function()
+    local f = io and io.open and io.open(path, "wb")
+    if not f and lvgl.fs and type(lvgl.fs.open_file) == "function" then
+      f = lvgl.fs.open_file(path, "w")
+    end
+    if not f then error("open failed") end
+    f:write(data)
+    f:close()
+  end)
+end
+
+local function readFileBytes(p, maxBytes)
+  local f = openFile(p, "r")
+  if not f then return nil end
+  local data = nil
+  pcall(function() data = f:read(maxBytes or 65536) end)
+  pcall(function() f:close() end)
+  return data
+end
+
+local function runREDump()
+  local fails = {}
+  local okCount, failCount = 0, 0
+  local function save(dest, data)
+    if type(data) == "string" and #data > 0 then
+      return writeFile(joinPath(REDUMP.dir, dest), data)
+    end
+    return false
+  end
+  local function record(tag, label, ok)
+    if ok then
+      okCount = okCount + 1
+    else
+      failCount = failCount + 1
+      fails[#fails + 1] = tag .. " " .. label
+    end
+  end
+
+  -- 0) 建目录（-p 与无 -p 各试一次，目录已存在时失败忽略）
+  shellExec("mkdir -p " .. REDUMP.dir)
+  shellExec("mkdir " .. REDUMP.dir)
+
+  -- 1) 文本文件拷贝
+  for _, t in ipairs(REDUMP_FILES) do
+    record("file", t[1], save(t[2], readFileBytes(t[1], REDUMP.max_file)))
+  end
+
+  -- 2) 目录清单
+  for _, d in ipairs(REDUMP_DIRS) do
+    local list = listDir(d)
+    if not list then
+      record("dir", d, false)
+    else
+      local out = {}
+      for _, e in ipairs(list) do
+        if e.isDir then
+          out[#out + 1] = "D  " .. e.name
+        else
+          out[#out + 1] = "F  " .. e.name .. "  " .. tostring(fileSize(e.full) or "?")
+        end
+      end
+      local dest = "dir_" .. (d:gsub("[^%w]", "_")) .. ".txt"
+      record("dir", d, save(dest, table.concat(out, "\n") .. "\n"))
+    end
+  end
+
+  -- 3) shell 命令输出
+  if type(os.execute) == "function" then
+    for _, c in ipairs(REDUMP_CMDS) do
+      local ok, out = shellCapture(c[1])
+      record("cmd", c[1], ok and save(c[2], out))
+    end
+  else
+    failCount = failCount + 1
+    fails[#fails + 1] = "cmd (no os.execute)"
+  end
+
+  local body = (#fails == 0) and "all samples collected" or table.concat(fails, "\n")
+  showInfo("RE DUMP -> " .. REDUMP.dir,
+    body,
+    string.format("%d saved / %d failed. browse this dir in file manager", okCount, failCount))
+end
+
 -- ---- 界面 ----
 local root = lvgl.Object(nil, {
   x = 0, y = 0, w = W, h = H,
@@ -260,38 +513,39 @@ local root = lvgl.Object(nil, {
 })
 pcall(function() root:clear_flag(lvgl.FLAG.SCROLLABLE) end)
 
--- 顶栏（白色卡片）
-local header = lvgl.Object(root, { x = 0, y = 0, w = W, h = HEADER_H, bg_color = C.CARD, bg_opa = 255, border_width = 0, pad_all = 0 })
+-- 顶栏（原生深色，底部细分隔线）
+local header = lvgl.Object(root, { x = 0, y = 0, w = W, h = HEADER_H, bg_color = C.BG, bg_opa = 255, border_width = 0, pad_all = 0 })
 header:clear_flag(lvgl.FLAG.SCROLLABLE)
 local headerSep = lvgl.Object(root, { x = 0, y = HEADER_H, w = W, h = 1, bg_color = C.SEP, bg_opa = 255, border_width = 0 })
 headerSep:clear_flag(lvgl.FLAG.SCROLLABLE)
 
-local backBtn = mkButton(header, 0, 0, 46, HEADER_H, "<", function() goUp() end, { color = C.DIR, font = 24 })
-local infoBtn = mkButton(header, W - 46, 0, 46, HEADER_H, "i", nil, { color = C.DIR, font = 18 })
-local pathLabel = mkLabel(header, { x = 52, y = 18, w = W - 104, text = HOME, text_color = C.TEXT, text_font = font(16) })
+local backBtn = mkButton(header, 0, 0, 48, HEADER_H, "<", function() goUp() end, { color = C.TEXT, font = 24 })
+local infoBtn = mkButton(header, W - 48, 0, 48, HEADER_H, "i", nil, { color = C.DIM, font = 16 })
+local titleLabel = mkLabel(header, { x = 52, y = 10, w = W - 104, text = "Files", text_color = C.TEXT, text_font = font(18) })
+local pathLabel = mkLabel(header, { x = 52, y = 38, w = W - 104, text = HOME, text_color = C.DIM, text_font = font(14) })
 
 -- 列表区
 local listArea = lvgl.Object(root, { x = 0, y = LIST_TOP, w = W, h = FOOTER_TOP - LIST_TOP, bg_color = C.BG, bg_opa = 255, border_width = 0, pad_all = 0 })
 listArea:clear_flag(lvgl.FLAG.SCROLLABLE)
 
--- 底栏（白色卡片）
-local footer = lvgl.Object(root, { x = 0, y = FOOTER_TOP, w = W, h = FOOTER_H, bg_color = C.CARD, bg_opa = 255, border_width = 0, pad_all = 0 })
+-- 底栏（原生深色，顶部分隔线）
+local footer = lvgl.Object(root, { x = 0, y = FOOTER_TOP, w = W, h = FOOTER_H, bg_color = C.BG, bg_opa = 255, border_width = 0, pad_all = 0 })
 footer:clear_flag(lvgl.FLAG.SCROLLABLE)
 local footerSep = lvgl.Object(root, { x = 0, y = FOOTER_TOP, w = W, h = 1, bg_color = C.SEP, bg_opa = 255, border_width = 0 })
 footerSep:clear_flag(lvgl.FLAG.SCROLLABLE)
 
-local prevBtn = mkButton(footer, 12, 10, 44, 30, "<", function()
+local statusLabel = mkLabel(footer, { x = 16, y = 16, w = W - 156, text = "", text_color = C.DIM, text_font = font(14) })
+local prevBtn = mkButton(footer, W - 140, 6, 38, 32, "<", function()
   pageIdx = math.max(0, pageIdx - 1)
   render()
-end, { radius = 15, bg_color = C.BTN, bg_opa = 255, color = C.TEXT, font = 18 })
+end, { radius = 16, bg_color = C.BTN, bg_opa = 255, color = C.TEXT, font = 18 })
 
-local nextBtn = mkButton(footer, W - 56, 10, 44, 30, ">", function()
+local pageLabel = mkLabel(footer, { x = W - 98, y = 14, w = 44, text = "", align = lvgl.ALIGN.CENTER, text_color = C.DIM, text_font = font(14) })
+
+local nextBtn = mkButton(footer, W - 54, 6, 38, 32, ">", function()
   pageIdx = pageIdx + 1
   render()
-end, { radius = 15, bg_color = C.BTN, bg_opa = 255, color = C.TEXT, font = 18 })
-
-local pageLabel = mkLabel(footer, { x = 64, y = 16, w = W - 128, text = "", align = lvgl.ALIGN.CENTER, text_color = C.DIM, text_font = font(14) })
-local statusLabel = mkLabel(footer, { x = 16, y = 44, w = W - 32, text = "tap path to jump to /", text_color = C.DIM, text_font = font(14) })
+end, { radius = 16, bg_color = C.BTN, bg_opa = 255, color = C.TEXT, font = 18 })
 
 -- ---- 列表渲染 ----
 local rows = {}
@@ -303,43 +557,63 @@ local function clearRows()
   rows = {}
 end
 
--- 卡片：白色圆角，左圆点 + 名称，右 DEL
+-- 行图标：文件夹 = 系统蓝圆角矩形+顶部凸起；文件 = 浅灰圆角矩形
+local function mkRowIcon(card, isDir)
+  local objs = {}
+  local x = 20
+  local y = (ROW_H - 18) / 2
+  if isDir then
+    objs[#objs + 1] = lvgl.Object(card, { x = x, y = y, w = 8, h = 4, radius = 1, bg_color = C.ACCENT, bg_opa = 255, border_width = 0 })
+    objs[#objs + 1] = lvgl.Object(card, { x = x, y = y + 3, w = 20, h = 14, radius = 3, bg_color = C.ACCENT, bg_opa = 255, border_width = 0 })
+  else
+    objs[#objs + 1] = lvgl.Object(card, { x = x + 3, y = y, w = 14, h = 18, radius = 2, bg_color = C.FILE_ICON, bg_opa = 255, border_width = 0 })
+  end
+  for _, o in ipairs(objs) do
+    pcall(function() o:clear_flag(lvgl.FLAG.SCROLLABLE) end)
+    pcall(function() o:add_flag(lvgl.FLAG.EVENT_BUBBLE) end)
+  end
+  return objs
+end
+
+-- 行：全宽透明 + 底部细分隔线；左图标+名称，右红色 Delete
 local function addRow(e, slot)
-  local y = slot * ROW_H + 5
-  local card = lvgl.Object(listArea, { x = PAD_X, y = y, w = CARD_W, h = CARD_H, radius = 12, bg_color = C.CARD, bg_opa = 255, border_width = 0, pad_all = 0 })
+  local y = slot * ROW_H
+  local card = lvgl.Object(listArea, { x = 0, y = y, w = W, h = ROW_H, bg_color = 0, bg_opa = 0, border_width = 0, pad_all = 0 })
   card:clear_flag(lvgl.FLAG.SCROLLABLE)
   card:add_flag(lvgl.FLAG.CLICKABLE)
 
-  -- 左侧彩色圆点（目录蓝 / 文件深灰）
-  local dot = lvgl.Object(card, { x = 16, y = (CARD_H - 8) / 2, w = 8, h = 8, radius = 4, bg_color = e.isDir and C.DIR or C.FILE, bg_opa = 255, border_width = 0 })
-  dot:clear_flag(lvgl.FLAG.SCROLLABLE)
-  pcall(function() dot:add_flag(lvgl.FLAG.EVENT_BUBBLE) end)
+  mkRowIcon(card, e.isDir)
 
   local label = e.isDir and (e.name .. "/") or e.name
-  local nameW = CARD_W - 32 - 66
-  mkLabel(card, { x = 32, y = (CARD_H - 20) / 2, w = nameW, text = ltruncate(label, 26), text_color = e.isDir and C.DIR or C.TEXT, text_font = font(16) })
+  mkLabel(card, { x = NAME_X, y = (ROW_H - 20) / 2, w = W - NAME_X - DEL_W - 28, text = ltruncate(label, 24), text_color = C.TEXT, text_font = font(16) })
 
   card:onevent(lvgl.EVENT.SHORT_CLICKED, function()
     if e.isDir then navigate(e.full) else showFileInfo(e) end
   end)
 
-  local delBtn = mkButton(card, CARD_W - 62, 8, 52, CARD_H - 16, "DEL", function() confirmDelete(e) end, { radius = 10, bg_color = C.DEL_BG, bg_opa = 255, color = C.DEL, font = 14 })
+  local delBtn = mkButton(card, W - 16 - DEL_W, (ROW_H - DEL_H) / 2, DEL_W, DEL_H, "Delete", function() confirmDelete(e) end, { radius = 16, bg_color = C.DESTRUCTIVE_BG, bg_opa = 255, color = C.DESTRUCTIVE, font = 14 })
 
-  rows[#rows + 1] = { card, dot, delBtn }
+  local sep = lvgl.Object(listArea, { x = 20, y = y + ROW_H - 1, w = W - 40, h = 1, bg_color = C.SEP, bg_opa = 255, border_width = 0 })
+  sep:clear_flag(lvgl.FLAG.SCROLLABLE)
+
+  rows[#rows + 1] = { card, sep, delBtn }
 end
 
--- 返回上一级卡片
+-- 返回上一级行
 local function addUpRow(slot)
-  local y = slot * ROW_H + 5
-  local card = lvgl.Object(listArea, { x = PAD_X, y = y, w = CARD_W, h = CARD_H, radius = 12, bg_color = C.CARD, bg_opa = 255, border_width = 0, pad_all = 0 })
+  local y = slot * ROW_H
+  local card = lvgl.Object(listArea, { x = 0, y = y, w = W, h = ROW_H, bg_color = 0, bg_opa = 0, border_width = 0, pad_all = 0 })
   card:clear_flag(lvgl.FLAG.SCROLLABLE)
   card:add_flag(lvgl.FLAG.CLICKABLE)
-  local dot = lvgl.Object(card, { x = 16, y = (CARD_H - 8) / 2, w = 8, h = 8, radius = 4, bg_color = C.DIR, bg_opa = 255, border_width = 0 })
-  dot:clear_flag(lvgl.FLAG.SCROLLABLE)
-  pcall(function() dot:add_flag(lvgl.FLAG.EVENT_BUBBLE) end)
-  mkLabel(card, { x = 32, y = (CARD_H - 20) / 2, w = CARD_W - 44, text = "..  (up)", text_color = C.DIR, text_font = font(16) })
+
+  mkRowIcon(card, true)
+  mkLabel(card, { x = NAME_X, y = (ROW_H - 20) / 2, w = W - NAME_X - DEL_W - 28, text = "..  (up)", text_color = C.ACCENT, text_font = font(16) })
   card:onevent(lvgl.EVENT.SHORT_CLICKED, function() goUp() end)
-  rows[#rows + 1] = { card, dot }
+
+  local sep = lvgl.Object(listArea, { x = 20, y = y + ROW_H - 1, w = W - 40, h = 1, bg_color = C.SEP, bg_opa = 255, border_width = 0 })
+  sep:clear_flag(lvgl.FLAG.SCROLLABLE)
+
+  rows[#rows + 1] = { card, sep }
 end
 
 render = function()
@@ -362,25 +636,25 @@ render = function()
     if e then addRow(e, slot + k - 1) end
   end
 
-  setText(pageLabel, string.format("%d / %d", pageIdx + 1, pageCount))
+  setText(pageLabel, string.format("%d/%d", pageIdx + 1, pageCount))
   pcall(function() prevBtn:set({ hidden = pageIdx == 0 }) end)
   pcall(function() nextBtn:set({ hidden = pageIdx >= pageCount - 1 }) end)
 
   if total == 0 then
-    setText(statusLabel, "(empty directory)")
+    setText(statusLabel, "(empty)")
   else
     local nd, nf = 0, 0
     for _, e in ipairs(entries) do
       if e.isDir then nd = nd + 1 else nf = nf + 1 end
     end
-    setText(statusLabel, string.format("%d folders  /  %d files", nd, nf))
+    setText(statusLabel, ltruncate(string.format("%d dirs / %d files", nd, nf), 24))
   end
 end
 
 navigate = function(p)
   local list = listDir(p)
   if not list then
-    setText(statusLabel, "cannot open: " .. ltruncate(p, 26))
+    setText(statusLabel, ltruncate("cannot open: " .. p, 24))
     return
   end
   path = p
@@ -410,18 +684,22 @@ end
 local infoDialog, infoTitle, infoBody, infoSub
 
 local function buildInfoDialog()
-  infoDialog = lvgl.Object(root, { x = 0, y = 0, w = W, h = H, bg_color = 0x000000, bg_opa = 120, border_width = 0, pad_all = 0 })
+  infoDialog = lvgl.Object(root, { x = 0, y = 0, w = W, h = H, bg_color = 0x000000, bg_opa = 140, border_width = 0, pad_all = 0 })
   infoDialog:clear_flag(lvgl.FLAG.SCROLLABLE)
   infoDialog:set({ hidden = true })
 
   local cw = W - 40
-  local card = lvgl.Object(infoDialog, { x = 20, y = 72, w = cw, h = 336, radius = 16, bg_color = C.CARD, bg_opa = 255, border_width = 0, pad_all = 0 })
+  local card = lvgl.Object(infoDialog, { x = 20, y = 72, w = cw, h = 336, radius = 16, bg_color = C.SURFACE, bg_opa = 255, border_width = 0, pad_all = 0 })
   card:clear_flag(lvgl.FLAG.SCROLLABLE)
 
   infoTitle = mkLabel(card, { x = 20, y = 16, w = cw - 40, text = "", text_color = C.TEXT, text_font = font(18) })
   infoBody = mkLabel(card, { x = 20, y = 50, w = cw - 40, h = 210, text = "", text_color = C.TEXT, text_font = font(16) })
   infoSub = mkLabel(card, { x = 20, y = 262, w = cw - 40, text = "", text_color = C.DIM, text_font = font(14) })
-  mkButton(card, 20, 288, cw - 40, 36, "CLOSE", function() hideInfo() end, { radius = 12, bg_color = C.BTN, bg_opa = 255, color = C.TEXT, font = 14 })
+  local gap = 8
+  local bw = (cw - 40 - gap * 2) / 3
+  mkButton(card, 20, 288, bw, 36, "DUMP", function() runREDump() end, { radius = 12, bg_color = C.BTN, bg_opa = 255, color = C.TEXT, font = 13 })
+  mkButton(card, 20 + bw + gap, 288, bw, 36, "INJECT", function() runInject() end, { radius = 12, bg_color = C.ACCENT, bg_opa = 255, color = 0xFFFFFF, font = 13 })
+  mkButton(card, 20 + 2 * (bw + gap), 288, bw, 36, "CLOSE", function() hideInfo() end, { radius = 12, bg_color = C.BTN, bg_opa = 255, color = C.TEXT, font = 13 })
 end
 
 showInfo = function(title, body, sub)
@@ -444,31 +722,30 @@ local function showCapabilities()
   end
   local body = table.concat(lines, "\n")
   local note = "native injection via Lua watchface runtime"
+  if PAYLOAD and #PAYLOAD > 0 then note = note .. " | .ko embedded" end
   showInfo("SYSTEM CAPABILITIES", body, note)
 end
 
--- 顶栏 i 按钮：先探测能力，再打开弹窗
-local infoBtnHandler = function() showCapabilities() end
-pcall(function() infoBtn:onevent(lvgl.EVENT.SHORT_CLICKED, infoBtnHandler) end)
+pcall(function() infoBtn:onevent(lvgl.EVENT.SHORT_CLICKED, function() showCapabilities() end) end)
 
 -- ---- 删除确认弹窗 ----
 local dialog, dName, dPath, dTarget
 
 local function buildDialog()
-  dialog = lvgl.Object(root, { x = 0, y = 0, w = W, h = H, bg_color = 0x000000, bg_opa = 120, border_width = 0, pad_all = 0 })
+  dialog = lvgl.Object(root, { x = 0, y = 0, w = W, h = H, bg_color = 0x000000, bg_opa = 140, border_width = 0, pad_all = 0 })
   dialog:clear_flag(lvgl.FLAG.SCROLLABLE)
   dialog:set({ hidden = true })
 
-  local card = lvgl.Object(dialog, { x = 32, y = 150, w = W - 64, h = 184, radius = 16, bg_color = C.CARD, bg_opa = 255, border_width = 0, pad_all = 0 })
+  local card = lvgl.Object(dialog, { x = 32, y = 150, w = W - 64, h = 184, radius = 16, bg_color = C.SURFACE, bg_opa = 255, border_width = 0, pad_all = 0 })
   card:clear_flag(lvgl.FLAG.SCROLLABLE)
 
   mkLabel(card, { x = 24, y = 20, w = W - 112, text = "Delete this item?", text_color = C.TEXT, text_font = font(18) })
-  dName = mkLabel(card, { x = 24, y = 52, w = W - 112, text = "", text_color = C.DEL, text_font = font(16) })
+  dName = mkLabel(card, { x = 24, y = 52, w = W - 112, text = "", text_color = C.DESTRUCTIVE, text_font = font(16) })
   dPath = mkLabel(card, { x = 24, y = 78, w = W - 112, text = "", text_color = C.DIM, text_font = font(14) })
 
   local bw = (W - 64 - 48 - 12) / 2
   mkButton(card, 24, 122, bw, 42, "CANCEL", function() hideDialog() end, { radius = 12, bg_color = C.BTN, bg_opa = 255, color = C.TEXT, font = 14 })
-  mkButton(card, 24 + bw + 12, 122, bw, 42, "DELETE", function() doDelete() end, { radius = 12, bg_color = C.DEL, bg_opa = 255, color = 0xFFFFFF, font = 14 })
+  mkButton(card, 24 + bw + 12, 122, bw, 42, "DELETE", function() doDelete() end, { radius = 12, bg_color = C.DESTRUCTIVE, bg_opa = 255, color = 0xFFFFFF, font = 14 })
 end
 
 confirmDelete = function(e)
@@ -490,7 +767,7 @@ doDelete = function()
   if not t then return end
   local ok, res = removePath(t.full)
   if ok and res == true then
-    setText(statusLabel, "deleted: " .. ltruncate(t.name, 24))
+    setText(statusLabel, ltruncate("deleted: " .. t.name, 24))
     pcall(function()
       local okv, vibrator = pcall(require, "vibrator")
       if okv and vibrator and vibrator.start then
@@ -499,7 +776,7 @@ doDelete = function()
     end)
     navigate(path)
   else
-    setText(statusLabel, "delete failed: " .. tostring(res or "unknown"))
+    setText(statusLabel, ltruncate("delete failed: " .. tostring(res or "unknown"), 24))
   end
 end
 

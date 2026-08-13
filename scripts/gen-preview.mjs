@@ -14,17 +14,17 @@ const W = 336;
 const H = 480;
 const px = Buffer.alloc(W * H * 4, 0);
 
-// 与 lua/main.lua 的浅色配色一致（RGBA 字节序）
-const BG = [244, 245, 247];
-const CARD = [255, 255, 255];
-const TEXT = [27, 32, 41];
-const DIM = [138, 148, 166];
-const DIR = [47, 111, 237];
-const FILE = [58, 69, 84];
-const DEL = [229, 72, 77];
-const DEL_BG = [253, 235, 236];
-const SEP = [233, 237, 242];
-const BTN = [238, 241, 245];
+// 与 lua/main.lua 的原生深色配色一致（RGBA 字节序）
+const BG = [0, 0, 0];
+const SURFACE = [17, 17, 19];
+const TEXT = [255, 255, 255];
+const DIM = [142, 142, 147];
+const ACCENT = [10, 132, 255];
+const DESTRUCTIVE = [255, 69, 58];
+const DESTRUCTIVE_BG = [42, 17, 20];
+const SEP = [28, 28, 30];
+const BTN = [28, 28, 30];
+const FILE_ICON = [58, 58, 60];
 
 function fill(x0, y0, w, h, [r, g, b], a = 255) {
   for (let y = Math.max(0, y0); y < Math.min(H, y0 + h); y++) {
@@ -65,45 +65,40 @@ const G_I = ["111", "010", "010", "010", "111"];
 // ---- 背景 ----
 fill(0, 0, W, H, BG);
 
-// ---- 顶部标题栏 ----
-fill(0, 0, W, 56, CARD);
-fill(0, 56, W, 1, SEP);
-glyph(16, 24, G_LT, DIR);            // < 返回
-fill(52, 25, 190, 8, TEXT);          // 路径文字条
-glyph(296, 24, G_I, DIR);            // i 信息
+// ---- 顶部标题栏（原生深色）----
+fill(0, 0, W, 64, BG);
+fill(0, 64, W, 1, SEP);
+glyph(14, 26, G_LT, TEXT);            // < 返回
+fill(52, 14, 40, 12, TEXT);           // Files 标题
+fill(52, 36, 190, 8, DIM);            // 路径面包屑
+glyph(296, 26, G_I, DIM);             // i 信息
 
-// ---- 列表行：圆点 + 名称 + DEL 按钮 ----
-const rows = [
-  { dir: true },
-  { dir: false },
-  { dir: false },
-  { dir: true },
-  { dir: false },
-  { dir: false },
-];
-const listTop = 62;
+// ---- 列表行：图标 + 名称 + Delete ----
+const rows = [true, false, false, true, false, false];
+const listTop = 68;
 const rowH = 56;
 for (let i = 0; i < rows.length; i++) {
-  const y = listTop + i * rowH + 5;
-  fillRound(12, y, W - 24, 46, CARD, 12);
-  // 左侧圆点
-  fillRound(28, y + 19, 8, 8, rows[i].dir ? DIR : FILE, 4);
-  // 名称条
-  fill(44, y + 15, 150, 16, rows[i].dir ? DIR : FILE);
-  // 右侧 DEL 按钮
-  fillRound(W - 74, y + 8, 52, 30, DEL_BG, 10);
-  fill(W - 62, y + 17, 28, 12, DEL);
+  const y = listTop + i * rowH;
+  fill(20, y + rowH - 1, W - 40, 1, SEP);          // 分隔线
+  if (rows[i]) {
+    fill(20, y + 21, 8, 4, ACCENT);                // 文件夹凸起
+    fillRound(20, y + 24, 20, 14, ACCENT, 3);      // 文件夹主体
+  } else {
+    fillRound(23, y + 19, 14, 18, FILE_ICON, 2);   // 文件
+  }
+  fill(48, y + 20, 150, 14, TEXT);                 // 名称
+  fillRound(W - 88, y + 12, 72, 32, DESTRUCTIVE_BG, 16); // Delete 底
+  fill(W - 71, y + 21, 38, 12, DESTRUCTIVE);       // Delete 文字
 }
 
-// ---- 底栏：上一页 / 页码 / 下一页 ----
-fill(0, 416, W, 1, SEP);
-fill(0, 417, W, 63, CARD);
-fillRound(12, 426, 44, 30, BTN, 15);
-glyph(28, 437, G_LT, DIM);
-fillRound(W - 56, 426, 44, 30, BTN, 15);
-glyph(W - 40, 437, G_GT, DIM);
-fill(146, 436, 44, 8, DIM);          // 页码 "1 / 2"
-fill(16, 460, W - 32, 6, DIM);       // 状态行
+// ---- 底栏：条目统计 + 分页 ----
+fill(0, 436, W, 1, SEP);
+fill(16, 452, 150, 6, DIM);                        // 统计
+fillRound(W - 140, 442, 38, 32, BTN, 16);          // prev
+glyph(W - 124, 456, G_LT, DIM);
+fill(W - 98, 450, 44, 8, DIM);                     // 页码
+fillRound(W - 54, 442, 38, 32, BTN, 16);           // next
+glyph(W - 38, 456, G_GT, DIM);
 
 // ---- PNG 编码 ----
 function crc32(buf) {

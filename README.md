@@ -1,12 +1,12 @@
 # DEEP_SCAN — 小米手环 9 Pro 文件管理器表盘
 
-一款运行在 **小米手环 9 Pro（Vela / MiWear Lua 5.4，336×480）** 上的**简洁浅色文件管理器表盘**。
+一款运行在 **小米手环 9 Pro（Vela / MiWear Lua 5.4，336×480）** 上的**原生深色系统 UI 风格文件管理器表盘**。
 
 安装后**直接进入文件管理器**（无时钟表盘界面），可浏览系统文件并删除：
 
 - **浏览**：逐层进入任意目录，目录/文件分行显示；
 - **查看**：点文件行弹出详情（大小 + 文本预览）；
-- **删除**：每行右侧 DEL 按钮，二次确认后调用 `os.remove()` 删除；
+- **删除**：每行右侧红色 `Delete` 按钮，二次确认后调用 `os.remove()` 删除；
 - **能力探测**：顶栏 `i` 按钮列出当前运行时实际暴露的“原生能力”（详见下文）。
 
 ## 目录结构
@@ -38,9 +38,9 @@ scripts/gen-preview.mjs      # 预览图生成脚本（纯 Node，无依赖）
 
 ### 界面布局
 
-- **顶栏**：`<` 返回上一级、路径显示（**点按路径可跳回根目录 `/`**）、`i` 能力信息；
-- **列表**：每行白色圆角卡片，左侧彩色圆点 + 名称（文件夹蓝色带 `/` 后缀、文件深色），右侧红色 DEL 删除按钮；
-- **底部**：`<` / `>` 分页、页码、状态栏。
+- **顶栏**：`<` 返回上一级、标题 `Files`、当前路径面包屑、`i` 能力信息；
+- **列表**：原生深色扁平列表（黑底全宽行 + 细分隔线），左侧文件夹/文件图标 + 名称（文件夹带 `/` 后缀），右侧红色 `Delete` 删除按钮；
+- **底部**：条目统计 + `<` / `>` 分页页码。
 
 ### 操作
 
@@ -48,10 +48,11 @@ scripts/gen-preview.mjs      # 预览图生成脚本（纯 Node，无依赖）
 | --- | --- |
 | 点目录行 | 进入该目录 |
 | 点文件行 | 弹出文件详情（名称、大小、前 64 字节文本预览） |
-| 行右侧 DEL | 弹出删除确认（CANCEL / DELETE） |
+| 行右侧 Delete | 弹出删除确认（CANCEL / DELETE） |
 | 顶栏 `<` | 进入上一级目录 |
-| 点按顶栏路径 | 回到根目录 `/` |
-| 顶栏 `i` | 显示系统能力探测结果 |
+| 顶栏 `i` | 显示系统能力探测结果（面板内还有 `DUMP` / `INJECT`） |
+| 面板 `DUMP` | 一键采集运行时逆向样本到 `/data/deepscan_re/` |
+| 面板 `INJECT` | 执行原生代码注入链（需 `payload/module.ko`） |
 | 底部 `<` / `>` | 分页浏览（每页 6 行） |
 
 ### 删除
@@ -68,7 +69,7 @@ scripts/gen-preview.mjs      # 预览图生成脚本（纯 Node，无依赖）
 
 - 表盘运行在独立 Lua 5.4 进程里，但可通过 `lvgl.fs` / `io` 访问部分真实文件系统（如 `/data/`、`/data/app/watchface/`、`/tmp/`、`/resource/`、`/etc/` 等），这正是本表盘“文件管理器”能成立的原因；
 - `os.remove()` 可删除可写分区内的文件；
-- **受限项**：`io.popen()` 不可用、`package.loadlib()` 被禁用（无法从表盘加载 `.so` 原生库）、`os.execute()` 通常被裁剪——所以纯表盘无法直接执行原生二进制/Shell；
+- **受限项**：`package.loadlib()` 被禁用（无法从表盘加载 `.so` 原生库）；但实机已验证 `os.execute()` **可用**（`insmod`/`lsmod`/`exec` 均能执行），`io.popen()` 视固件而定（本表盘用「重定向到文件再读回」做兜底）；
 - 真正的“原生应用注入/提权”需要外部配合：如 **VelaSU（root daemon）+ Vela-Shell-Bridge**（让 QuickApp 通过 Lua daemon 执行受控的系统级 Shell 命令），或 QuickApp/AstroBox 插件的 `native` 权限。
 
 ### 本项目的落地方式
@@ -86,6 +87,49 @@ scripts/gen-preview.mjs      # 预览图生成脚本（纯 Node，无依赖）
 | Load native | `package.loadlib` |
 
 若某台设备上 `os.execute`/`io.popen` 恰好未被裁剪，后续可在该面板之上扩展 Shell 执行；否则这些项显示 `[--]`。
+
+### 已落地的注入链（ELF 注入闭环）
+
+表盘已内置**实机验证过的原生代码注入链**：把 `payload/module.ko` 放进仓库、重新打包后，能力面板里的 `INJECT` 按钮会执行
+
+```
+write  → 写 .ko 到 /data/deepscan_module.ko
+insmod → os.execute("insmod /data/deepscan_module.ko deepscan")   # modlib 加载
+lsmod  → os.execute("lsmod") 解析模块基址（第 5 列 = textalloc）
+exec   → os.execute("exec <base+1>")                                # Thumb 位跳入入口
+verify → 可选：mw 读取模块写入的标记地址
+```
+
+关键机制（实机验证结论）：insmod 只加载不执行；模块文本分配在 0x3D PSRAM 可执行区且地址每次动态变化，需从 `lsmod` 现场解析；`exec <base+1>` 以函数调用跳转、模块 `pop{r7,pc}` 干净返回；固件 Lua 5.4 `tonumber` 不认 `0x` 前缀需手动剥离。入口地址**无需手填**，代码自动解析。
+
+> ⚠️ “出现在应用列表 + 系统原生 UI”仍需进一步逆向：模块要调用固件的 UI 框架（LVX 渲染层）并注册到应用列表（`app_install`/`launcher_add`）。这需要**设备运行时样本**做符号分析——见下节「关于系统原生 UI」与 `re/README.md`。
+
+### 运行时逆向采集（RE DUMP）
+
+固件包已确认**整体加密 + RSA-2048 签名**（`vela_ap.bin` 为高熵密文，静态解密是死路），因此
+“应用列表注册 + 原生 UI 框架”只能靠**运行时逆向**拿明文。表盘已内置一键采集：
+
+**顶栏 `i` → `DUMP`**，把以下样本写到 `/data/deepscan_re/`：
+
+| 类别 | 内容 |
+| --- | --- |
+| 应用注册表 | `/data/apps.json`、`/data/apps.db`、`/data/persist.db` 的副本 |
+| 运行时信息 | `/proc/modules`、`/proc/version`、`/proc/kallsyms`、`/etc/passwd`、`/etc/group` |
+| 目录清单 | `/`、`/data`、`/data/app`、`/usr/lib`、`/lib`、`/system/image`、`/system/watchface` 等（类型+大小） |
+| shell 输出 | `mount`、`uname -a`、`df`、`ls -l /data`、`ls -l /usr/lib` |
+
+采集完成后用本表盘文件管理器进入 `/data/deepscan_re/`，逐条点开复制内容发回来即可（`apps.json`
+与 `dir_*` 清单是定位“应用列表注册 schema”和“原生 UI 框架 `.so`”的关键）。
+
+## 关于「系统原生 UI」
+
+一个硬约束：`.face` 表盘运行在**独立 Lua 5.4 进程**里，界面只能用 `lvgl` 绘制；真正的“系统原生 UI”（应用列表里带图标的快应用/原生应用界面）属于**另一套运行时**（Vela JS 快应用 `.rpk` / 原生应用），渲染栈与打包格式都不同，表盘无法直接调用。
+
+因此本项目把界面做成**仿 MiWear 原生深色扁平列表**：黑底、全宽行、细分隔线、系统蓝文件夹图标、系统红 `Delete` 按钮，视觉与操作尽量贴近系统原生应用，同时保住表盘“可浏览并删除真实系统文件”的能力。
+
+若目标是“真正出现在应用列表、用原生组件渲染”，需要以下路线之一（均处于研究阶段）：
+- **改打包为 Vela JS 快应用（`.rpk`）**：能拿到原生 UI 与应用列表图标，但快应用文件系统接口通常被沙箱限制在自身数据目录，无法像表盘那样访问 `/data` 等系统全局路径——文件管理器核心能力会丢失；
+- **原生应用注入（ELF）**：利用表盘运行时的 `insmod`/`exec` 通道执行原生代码，再调用系统原生 UI 框架渲染。这是社区（Canopus 等）正在探索的方向，需要逆向系统私有 UI 接口。
 
 ## 打包与安装
 
@@ -145,7 +189,7 @@ lua5.4 scripts/smoke-test.lua              # 冒烟测试（打桩 lvgl，驱动
 ## 常见问题
 
 - **装完黑屏**：确认入口文件与 element TargetId 匹配（本打包器自动保证）。若用 EasyFace 自行编译，需保证 `.fprj` 的 `Shape="34"` Widget 指向 `app/_lua/deepscan/deepscan.lua`。
-- **表盘切换界面预览黑屏/白框漂移**：预览缩略图来自 `.face` 的预览块（230×328 BGR(A) RLE）。本仓库 `scripts/gen-preview.mjs` 生成的 `preview.png` 与 `scripts/build-face.mjs` 内嵌预览保持同一套浅色布局；若仍异常，多为第三方安装工具按旧缓存渲染，重装一次或换用 AstroBox 刷入。
+- **表盘切换界面预览黑屏/白框漂移**：预览缩略图来自 `.face` 的预览块（230×328 BGR(A) RLE）。本仓库 `scripts/gen-preview.mjs` 生成的 `preview.png` 与 `scripts/build-face.mjs` 内嵌预览保持同一套深色布局；若仍异常，多为第三方安装工具按旧缓存渲染，重装一次或换用 AstroBox 刷入。
 - **点不动**：本表盘为单屏文件管理器（无页面切换）。所有子标签均已加 `EVENT_BUBBLE`、可点元素显式 `CLICKABLE`，点击会落在父卡片/按钮上。
 - **删除失败**：多为只读分区、非空目录或无权限，状态栏会显示错误信息。
 - **列表太长**：分页浏览（每页 6 行）；`LIST_CAP`（默认 300）可在 `lua/main.lua` 顶部调整。

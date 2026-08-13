@@ -1,0 +1,74 @@
+[
+  {
+    "name": "vela_ap.bin",
+    "path": "/data/ota/app/vela_ap.bin",
+    "type": 1,
+    "offset": 4849664,
+    "size": 1402841,
+    "head": "87 6b 63 32 44 4c 17 e1"
+  },
+  {
+    "name": "vela_factory.bin",
+    "path": "/data/ota/app/vela_factory.bin",
+    "type": 2,
+    "offset": 6252509,
+    "size": 191544,
+    "head": "24 16 5f de 63 fd 4e fe"
+  },
+  {
+    "name": "vela_bl2.bin",
+    "path": "/data/ota/boot/vela_bl2.bin",
+    "type": 2,
+    "offset": 6444057,
+    "size": 44157,
+    "head": "92 c2 09 ed 78 94 d7 c5"
+  },
+  {
+    "name": "vela_bl.bin",
+    "path": "/data/ota/boot/vela_bl.bin",
+    "type": 6,
+    "offset": 6488218,
+    "size": 200210,
+    "head": "c9 8e 2d 34 45 0b 6b 26"
+  },
+  {
+    "name": "D11A06.bin",
+    "path": "/data/ota/nfc/D11A06.bin",
+    "type": 7,
+    "offset": 6688432,
+    "size": 27040,
+    "head": "fc d7 2c fe f5 20 f4 ff"
+  },
+  {
+    "name": "hyn_wxn_firmware.bin",
+    "path": "/data/ota/tp/hyn_wxn_firmware.bin",
+    "type": 7,
+    "offset": 6715476,
+    "size": 36422,
+    "head": "a0 d2 81 77 f2 39 02 11"
+  },
+  {
+    "name": "tp_zinitix_firmware.bin",
+    "path": "/data/ota/tp/tp_zinitix_firmware.bin",
+    "type": 7,
+    "offset": 6751902,
+    "size": 27050,
+    "head": "0c f5 a4 7b 6c cd 15 a0"
+  },
+  {
+    "name": "hyn_firmware.bin",
+    "path": "/data/ota/tp/hyn_firmware.bin",
+    "type": 5,
+    "offset": 6778956,
+    "size": 229581,
+    "head": "86 b5 7f 03 72 81 f1 d9"
+  },
+  {
+    "name": "bream.patch",
+    "path": "/data/ota/gps/bream.patch",
+    "type": 0,
+    "offset": 7008541,
+    "size": 416,
+    "head": "e4 e5 24 7e 3a 0c e2 32"
+  }
+]
