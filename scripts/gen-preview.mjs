@@ -1,5 +1,6 @@
 // scripts/gen-preview.mjs
 // 生成表盘预览图 watchface/fprj/images/preview.png（336x480）
+// 与 lua/main.lua 的简洁浅色文件管理器界面一致。
 // 纯 Node 实现（zlib 内置），无需第三方依赖：
 //   bun scripts/gen-preview.mjs
 // 或 node scripts/gen-preview.mjs
@@ -13,31 +14,31 @@ const W = 336;
 const H = 480;
 const px = Buffer.alloc(W * H * 4, 0);
 
-const BG = [7, 9, 13];
-const SURFACE = [15, 20, 27];
-const BORDER = [34, 48, 66];
-const GREEN = [55, 224, 164];
-const GREEN_DIM = [30, 138, 102];
-const CYAN = [76, 201, 240];
-const TEXT = [230, 237, 245];
-const DIM = [138, 151, 168];
-const FAINT = [85, 98, 122];
-const RED = [255, 92, 92];
+// 与 lua/main.lua 的浅色配色一致（RGBA 字节序）
+const BG = [244, 245, 247];
+const CARD = [255, 255, 255];
+const TEXT = [27, 32, 41];
+const DIM = [138, 148, 166];
+const DIR = [47, 111, 237];
+const FILE = [58, 69, 84];
+const DEL = [229, 72, 77];
+const DEL_BG = [253, 235, 236];
+const SEP = [233, 237, 242];
+const BTN = [238, 241, 245];
 
 function fill(x0, y0, w, h, [r, g, b], a = 255) {
-  for (let y = y0; y < y0 + h; y++) {
-    for (let x = x0; x < x0 + w; x++) {
-      if (x < 0 || y < 0 || x >= W || y >= H) continue;
+  for (let y = Math.max(0, y0); y < Math.min(H, y0 + h); y++) {
+    for (let x = Math.max(0, x0); x < Math.min(W, x0 + w); x++) {
       const i = (y * W + x) * 4;
       px[i] = r; px[i + 1] = g; px[i + 2] = b; px[i + 3] = a;
     }
   }
 }
 
-// 圆角矩形（简易：只画内部区域，四角像素保持背景）
+// 圆角矩形（四角像素不绘制）
 function fillRound(x0, y0, w, h, color, radius = 12) {
-  for (let y = y0; y < y0 + h; y++) {
-    for (let x = x0; x < x0 + w; x++) {
+  for (let y = Math.max(0, y0); y < Math.min(H, y0 + h); y++) {
+    for (let x = Math.max(0, x0); x < Math.min(W, x0 + w); x++) {
       const dx = x < x0 + radius ? x0 + radius - x : x >= x0 + w - radius ? x - (x0 + w - radius) : 0;
       const dy = y < y0 + radius ? y0 + radius - y : y >= y0 + h - radius ? y - (y0 + h - radius) : 0;
       if (dx * dx + dy * dy > radius * radius) continue;
@@ -47,41 +48,62 @@ function fillRound(x0, y0, w, h, color, radius = 12) {
   }
 }
 
+// 简易像素字形（5x7 点阵，用于 < > i / 等小图标）
+function glyph(px0, py0, rows, color) {
+  for (let r = 0; r < rows.length; r++) {
+    const line = rows[r];
+    for (let c = 0; c < line.length; c++) {
+      if (line[c] === "1") fill(px0 + c, py0 + r, 1, 1, color);
+    }
+  }
+}
+
+const G_LT = ["00100", "01100", "11000", "01100", "00100"];
+const G_GT = ["00100", "00011", "00001", "00011", "00100"];
+const G_I = ["111", "010", "010", "010", "111"];
+
 // ---- 背景 ----
 fill(0, 0, W, H, BG);
 
-// ---- 顶部状态栏 ----
-fill(16, 14, 46, 5, DIM);            // 电量
-fill(272, 14, 52, 5, GREEN_DIM);     // DEEP_SCAN
+// ---- 顶部标题栏 ----
+fill(0, 0, W, 56, CARD);
+fill(0, 56, W, 1, SEP);
+glyph(16, 24, G_LT, DIR);            // < 返回
+fill(52, 25, 190, 8, TEXT);          // 路径文字条
+glyph(296, 24, G_I, DIR);            // i 信息
 
-// ---- 日期带 ----
-fill(140, 48, 56, 4, DIM);
+// ---- 列表行：圆点 + 名称 + DEL 按钮 ----
+const rows = [
+  { dir: true },
+  { dir: false },
+  { dir: false },
+  { dir: true },
+  { dir: false },
+  { dir: false },
+];
+const listTop = 62;
+const rowH = 56;
+for (let i = 0; i < rows.length; i++) {
+  const y = listTop + i * rowH + 5;
+  fillRound(12, y, W - 24, 46, CARD, 12);
+  // 左侧圆点
+  fillRound(28, y + 19, 8, 8, rows[i].dir ? DIR : FILE, 4);
+  // 名称条
+  fill(44, y + 15, 150, 16, rows[i].dir ? DIR : FILE);
+  // 右侧 DEL 按钮
+  fillRound(W - 74, y + 8, 52, 30, DEL_BG, 10);
+  fill(W - 62, y + 17, 28, 12, DEL);
+}
 
-// ---- 时间带（大号） ----
-fillRound(104, 138, 128, 52, SURFACE, 8);
-fill(120, 150, 40, 18, TEXT);
-fill(166, 150, 22, 18, TEXT);
-fill(196, 150, 6, 18, GREEN_DIM);    // 冒号
-fill(206, 150, 28, 18, TEXT);
-
-// ---- 秒 ----
-fill(152, 214, 32, 4, CYAN);
-
-// ---- 分隔线 ----
-fill(20, 252, W - 40, 1, BORDER);
-
-// ---- 终端卡片 ----
-fillRound(12, 272, W - 24, 188, SURFACE, 12);
-fill(12, 272, W - 24, 1, GREEN_DIM);       // 顶部描边
-fill(12, 459, W - 24, 1, GREEN_DIM);       // 底部描边
-fill(14, 282, 130, 4, GREEN);              // 标题行
-fill(24, 308, 120, 5, TEXT);               // steps
-fill(24, 336, 120, 5, TEXT);               // hr
-fill(24, 364, 96, 4, DIM);                 // fs
-fill(26, 420, 160, 5, GREEN);              // CTA
-fill(296, 420, 6, 6, GREEN);               // 光标
-
-// ---- 文件管理器小示意（底部提示区背景留空即可） ----
+// ---- 底栏：上一页 / 页码 / 下一页 ----
+fill(0, 416, W, 1, SEP);
+fill(0, 417, W, 63, CARD);
+fillRound(12, 426, 44, 30, BTN, 15);
+glyph(28, 437, G_LT, DIM);
+fillRound(W - 56, 426, 44, 30, BTN, 15);
+glyph(W - 40, 437, G_GT, DIM);
+fill(146, 436, 44, 8, DIM);          // 页码 "1 / 2"
+fill(16, 460, W - 32, 6, DIM);       // 状态行
 
 // ---- PNG 编码 ----
 function crc32(buf) {

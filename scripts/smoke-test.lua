@@ -148,9 +148,8 @@ local function makeEnv(withFs)
     -- 找到某行右侧的 DEL 按钮：与名称按钮同 y 的 DEL 按钮
     delBtnFor = function(nameBtn)
       if not nameBtn then return nil end
-      local rowY = nameBtn._props and nameBtn._props.y
       for _, o in ipairs(registry) do
-        if not o._deleted and o._props and o._props.y == rowY + 9 and o._children then
+        if not o._deleted and o._parent == nameBtn and o._children then
           for _, c in ipairs(o._children) do
             if not c._deleted and c._text == "DEL" then return o end
           end

@@ -16,7 +16,7 @@
 //   元素数据（紧跟 TOC 之后，16 字节）：[TargetId=(5<<24)|luaEntryIndex][PosX][PosY][0]*8
 //     —— 设备靠它找到 Lua 入口文件（app id == 0x05<<24 | 文件在 TOC 中的索引）
 //   文件记录：[u16 size&0xFFFF][u8 size>>16][u8 nameLen][16B 0] + name + data，4 字节对齐
-//   预览块（末尾）：RLEv11 压缩的 RGBA 图像，magic 0x5AA521E0
+//   预览块（末尾）：RLEv10 压缩的 BGR(A) 图像，magic 0x5AA521E0
 
 export const MAGIC = Buffer.from([0x5a, 0xa5, 0x34, 0x12]);
 export const HEADER_SIZE = 0x110;
@@ -48,7 +48,9 @@ export function buildRecord(name, data) {
   return { header, name: nameBuf, data, size: RECORD_HEADER_SIZE + nameBuf.length + data.length };
 }
 
-// RLEv11 压缩（recordSize 字节/像素）。控制字节：高位置 1 表示重复，低 7 位 = 记录数-1。
+// RLEv10 压缩（小米手环 9/9 Pro 预览块，recordSize 字节/像素）。
+// 控制字节高位置 0 = 重复：低 7 位 = 重复条数（1..127），后跟 1 条记录；
+// 控制字节高位置 1 = 逐条：低 7 位 = 逐条条数（1..127），后跟 N 条记录。
 function sameRecord(rgba, a, b, recordSize) {
   const off = a * recordSize;
   for (let i = 0; i < recordSize; i++) {
@@ -57,26 +59,26 @@ function sameRecord(rgba, a, b, recordSize) {
   return true;
 }
 
-export function encodeRLEv11(rgba, recordSize = 4) {
+export function encodeRLEv10(rgba, recordSize = 4) {
   const n = Math.floor(rgba.length / recordSize);
   const out = [];
   let i = 0;
   while (i < n) {
     let j = i + 1;
-    while (j < n && j - i < 128 && sameRecord(rgba, i, j, recordSize)) j++;
+    while (j < n && j - i < 127 && sameRecord(rgba, i, j, recordSize)) j++;
     const runLen = j - i;
     if (runLen >= 2) {
-      out.push(0x80 | (runLen - 1));
+      out.push(runLen); // 高位 0：重复 runLen 条
       for (let k = 0; k < recordSize; k++) out.push(rgba[i * recordSize + k]);
       i = j;
     } else {
       let k = i;
-      while (k < n && k - i < 128) {
+      while (k < n && k - i < 127) {
         if (k + 1 < n && sameRecord(rgba, k, k + 1, recordSize)) break;
         k++;
       }
       const uniqLen = k - i;
-      out.push(uniqLen - 1);
+      out.push(0x80 | uniqLen); // 高位 1：逐条 uniqLen 条
       for (let x = i; x < k; x++) for (let c = 0; c < recordSize; c++) out.push(rgba[x * recordSize + c]);
       i = k;
     }
@@ -84,20 +86,20 @@ export function encodeRLEv11(rgba, recordSize = 4) {
   return Buffer.from(out);
 }
 
-// 解码 RLEv11（用于自校验）
-export function decodeRLEv11(data, destRecords, recordSize = 4) {
+// 解码 RLEv10（用于自校验）
+export function decodeRLEv10(data, destRecords, recordSize = 4) {
   const out = Buffer.alloc(destRecords * recordSize);
   let offset = 0, len = 0;
   while (offset < data.length && len < destRecords) {
     const control = data[offset++];
     const size = control & 0x7f;
-    if ((control & 0x80) === 0x80) {
+    if ((control & 0x80) === 0x00) {
       if (offset + recordSize > data.length) break;
       const rec = data.subarray(offset, offset + recordSize);
-      for (let i = 0; i <= size && len < destRecords; i++, len++) rec.copy(out, len * recordSize);
+      for (let i = 0; i < size && len < destRecords; i++, len++) rec.copy(out, len * recordSize);
       offset += recordSize;
     } else {
-      for (let i = 0; i <= size && len < destRecords; i++, len++) {
+      for (let i = 0; i < size && len < destRecords; i++, len++) {
         if (offset + recordSize > data.length) break;
         data.copy(out, len * recordSize, offset, offset + recordSize);
         offset += recordSize;
@@ -107,14 +109,12 @@ export function decodeRLEv11(data, destRecords, recordSize = 4) {
   return out;
 }
 
-// 构建预览块（RGBA 像素，RLEv11 压缩）
+// 构建预览块（BGR(A) 像素，RLEv10 压缩，单一连续流，无帧头/帧尾）
 export function buildPreviewBlock(rgba, width = PREVIEW_W, height = PREVIEW_H) {
   if (rgba.length !== width * height * 4) throw new Error("preview rgba size mismatch");
-  const stream = encodeRLEv11(rgba, 4);
-  const count = 1; // 单帧预览
-  const cpr = Buffer.concat([u32(count), Buffer.from([0]), stream, u32(count), u32(0)]);
-  const dataLen = 8 + cpr.length; // magic(4) + compressType(4) + cpr
-  const bin = Buffer.alloc(20 + cpr.length);
+  const stream = encodeRLEv10(rgba, 4);
+  const dataLen = 8 + stream.length; // magic(4) + compressType(4) + stream
+  const bin = Buffer.alloc(20 + stream.length);
   bin[0] = 0; // rle 标志（9 Pro 样本为 0）
   bin[1] = 4; // type
   bin.writeUInt16LE(width, 4);
@@ -122,7 +122,7 @@ export function buildPreviewBlock(rgba, width = PREVIEW_W, height = PREVIEW_H) {
   bin.writeUInt32LE(dataLen, 8);
   bin.writeUInt32LE(PREVIEW_MAGIC, 12);
   bin.writeUInt32LE(((width * height * 4) << 4) | 4, 16); // compressType = 未压缩大小<<4 | type
-  cpr.copy(bin, 20);
+  stream.copy(bin, 20);
   return bin;
 }
 

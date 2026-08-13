@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import {
   buildFace,
   parseFace,
-  decodeRLEv11,
+  decodeRLEv10,
   buildPreviewBlock,
   PREVIEW_W,
   PREVIEW_H,
@@ -32,14 +32,16 @@ function listLuaFiles(projectName) {
 
 // ---- 预览图像素绘制（简洁文件管理器风格，等比缩放）----
 // 与 lua/main.lua 的浅色主题保持一致
-const BG = [246, 247, 249]; // 0xF6F7F9
+const BG = [244, 245, 247]; // 0xF4F5F7
 const HEADER = [255, 255, 255]; // 0xFFFFFF
-const TEXT = [27, 31, 39]; // 0x1B1F27
+const TEXT = [27, 32, 41]; // 0x1B2029
 const DIM = [138, 148, 166]; // 0x8A94A6
-const DIR = [31, 111, 235]; // 0x1F6FEB
+const DIR = [47, 111, 237]; // 0x2F6FED
+const FILE = [58, 69, 84]; // 0x3A4554
 const DEL = [229, 72, 77]; // 0xE5484D
-const DEL_BG = [252, 233, 234]; // 0xFCE9EA
-const SEP = [230, 233, 239]; // 0xE6E9EF
+const DEL_BG = [253, 235, 236]; // 0xFDEBEC
+const SEP = [233, 237, 242]; // 0xE9EDF2
+const BTN = [238, 241, 245]; // 0xEEF1F5
 
 function renderPreviewRgba(w, h) {
   const px = Buffer.alloc(w * h * 4, 0);
@@ -51,9 +53,9 @@ function renderPreviewRgba(w, h) {
     for (let y = Y1; y < Y2; y++) {
       for (let x = X1; x < X2; x++) {
         const i = (y * w + x) * 4;
-        px[i] = r;
+        px[i] = b; // BGR(A)：蓝在前（与官方 9 Pro 预览一致）
         px[i + 1] = g;
-        px[i + 2] = b;
+        px[i + 2] = r;
         px[i + 3] = a;
       }
     }
@@ -64,36 +66,41 @@ function renderPreviewRgba(w, h) {
 
   fill(0, 0, w, h, BG);
 
-  // 顶部白色标题栏：返回 / 路径 / 首页
+  // 顶部白色标题栏：返回 / 路径 / 信息
   fill(0, 0, w, 56 * sy, HEADER);
   fill(0, 56 * sy, w, 1, SEP);
-  fill(24 * sx, 22 * sy, 12 * sx, 16 * sy, DIR); // <
-  fill(300 * sx, 22 * sy, 12 * sx, 16 * sy, DIR); // /
-  fill(56 * sx, 26 * sy, 224 * sx, 10 * sy, TEXT); // 路径
+  fill(20 * sx, 24 * sy, 12 * sx, 10 * sy, DIR); // <
+  fill(52 * sx, 24 * sy, 200 * sx, 10 * sy, TEXT); // 路径
+  fill(302 * sx, 26 * sy, 8 * sx, 10 * sy, DIR); // i
 
-  // 文件/文件夹行：左名称 + 右 DEL 按钮 + 分隔线
+  // 文件/文件夹行：圆点 + 名称 + 右 DEL 按钮
   const rows = [
     { dir: true }, // app/
     { dir: false }, // notes.txt
     { dir: false }, // report.txt
     { dir: true }, // config/
     { dir: false }, // data.json
+    { dir: false }, // readme.md
   ];
-  const rowH = 50 * sy;
+  const rowH = 56 * sy;
   const listTop = 62 * sy;
   for (let i = 0; i < rows.length; i++) {
-    const y = listTop + i * rowH;
-    const c = rows[i].dir ? DIR : TEXT;
-    fill(20 * sx, y + 16 * sy, 150 * sx, 14 * sy, c); // 名称
-    fill(260 * sx, y + 10 * sy, 56 * sx, rowH - 20 * sy, DEL_BG); // DEL 底
-    fill(266 * sx, y + 17 * sy, 44 * sx, 12 * sy, DEL); // DEL 文字
-    fill(16 * sx, y + rowH - 1, w - 32 * sx, 1, SEP); // 分隔线
+    const y = listTop + i * rowH + 5 * sy;
+    const c = rows[i].dir ? DIR : FILE;
+    fill(12 * sx, y, w - 24 * sx, 46 * sy, HEADER); // 行卡片
+    fill(28 * sx, y + 19 * sy, 8 * sx, 8 * sy, c); // 左侧圆点
+    fill(44 * sx, y + 16 * sy, 150 * sx, 14 * sy, c); // 名称
+    fill(262 * sx, y + 8 * sy, 52 * sx, 30 * sy, DEL_BG); // DEL 底
+    fill(274 * sx, y + 17 * sy, 28 * sx, 12 * sy, DEL); // DEL 文字
   }
 
-  // 底部分页：上一页 / 页码 / 下一页
-  fill(8 * sx, 422 * sy, 90 * sx, 34 * sy, HEADER);
-  fill(238 * sx, 422 * sy, 90 * sx, 34 * sy, HEADER);
-  fill(120 * sx, 434 * sy, 96 * sx, 10 * sy, DIM);
+  // 底部分页：上一页 / 页码 / 下一页 + 状态行
+  fill(0, 416 * sy, w, 1, SEP);
+  fill(0, 417 * sy, w, (480 - 417) * sy, HEADER);
+  fill(12 * sx, 426 * sy, 44 * sx, 30 * sy, BTN); // prev
+  fill(280 * sx, 426 * sy, 44 * sx, 30 * sy, BTN); // next
+  fill(146 * sx, 437 * sy, 44 * sx, 8 * sy, DIM); // 页码
+  fill(16 * sx, 460 * sy, w - 32 * sx, 6 * sy, DIM); // 状态
 
   return px;
 }
@@ -135,9 +142,8 @@ function main() {
   // 预览块 RLE 自校验：解压后像素数应等于 w*h
   const pBuf = face.subarray(previewOffset, previewOffset + parsed.preview.blockLen);
   const dataLen = pBuf.readUInt32LE(8);
-  const cpr = pBuf.subarray(20, 20 + dataLen - 8);
-  const stream = cpr.subarray(5);
-  const dec = decodeRLEv11(stream, PREVIEW_W * PREVIEW_H, 4);
+  const stream = pBuf.subarray(20, 20 + dataLen - 8); // 单一 RLEv10 流，无帧头
+  const dec = decodeRLEv10(stream, PREVIEW_W * PREVIEW_H, 4);
   const nonEmpty = dec.some((v) => v !== 0);
   if (!nonEmpty) throw new Error("verify failed: preview decoded empty");
 
