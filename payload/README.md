@@ -1,5 +1,32 @@
 # payload/ — 原生应用注入载荷
 
+## 构建最小原生模块（本仓库自带，无需交叉编译器）
+
+本环境没有 ARM 交叉编译器（`arm-none-eabi-gcc`/Rust 均不可用），因此仓库内置了一个
+**逐字节手工编码 ARM Thumb-2 ET_REL ELF** 的模块构建器：
+
+```bash
+bun scripts/build-module.mjs   # → payload/module.ko（366 字节）
+```
+
+模块内容（`module_main`，纯 `.text`、零重定位、零外部符号，与朋友实机验证的闭环完全兼容）：
+
+```
+push {r7, lr}
+movw/movt r1, #0x20001000   → *(0x20001000) = 0x5EED0001   （标记1，同朋友探针地址）
+movw/movt r3, #0x20001004   → *(0x20001004) = 1             （标记2 = 版本号）
+movs r0, #0 / pop {r7, pc}  → 干净返回（LR 由 exec 设置）
+```
+
+脚本内置字节级自校验（ELF 头、e_machine=EM_ARM、e_type=ET_REL、段表、符号表布局），
+产物可用 `readelf -h/-s/-S payload/module.ko` 复核。
+
+> 注意：本模块只写验证标记，是「注入闭环能不能跑通」的最小探针；
+> 要真正渲染原生 UI / 注册应用列表，需要进一步逆向 `vela_ap.bin` 的
+> LVX 渲染层与 `app_install`/`launcher_add`（见 `re/README.md` 的运行时采集路径）。
+
+## 打包与使用
+
 把编译好的 NuttX/Vela `modlib` 内核模块放到这里，命名为 **`module.ko`**，然后重新打包：
 
 ```bash
@@ -47,3 +74,4 @@ verify → 可选：mw 读取模块写入的标记地址
 
 - `module.ko` —— 要加载的 ELF/`.ko` 模块（ET_REL，NuttX modlib 格式）。不存在时
   打包脚本注入 `PAYLOAD = nil`，INJECT 面板会显示 `write FAIL: no embedded payload`。
+- `scripts/build-module.mjs` —— 手工编码最小模块的构建器（见上文，替代交叉编译器）。
