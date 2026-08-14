@@ -35,6 +35,15 @@ fi
 # 部分链接（-r 保持 ET_REL），用 NuttX 官方 gnu-elf.ld 排列 .text/.data/.bss。
 "$LD" -r -T "$LDSCRIPT" "$TMP/module.o" -o "$OUT"
 
+# e_entry = module_main 符号值（0x00000001，即 .text 偏移 0 + Thumb 位）：
+# openvela 加载器按 entrypt = textalloc + e_entry 计算模块入口（binfmt/elf.c），
+# 与朋友实机验证通过的模块（e_entry=module_main）保持一致；对 insmod 本身无副作用。
+ENTRY_HEX=$(arm-none-eabi-readelf -s "$OUT" | awk '$8 == "module_main" && $5 == "GLOBAL" { print $2; exit; }')
+ENTRY_HEX=${ENTRY_HEX:-00000000}
+ENTRY_NUM=$((16#$ENTRY_HEX))
+printf "\\x$(printf '%02x' $((ENTRY_NUM & 0xff)))\\x$(printf '%02x' $(((ENTRY_NUM >> 8) & 0xff)))\\x$(printf '%02x' $(((ENTRY_NUM >> 16) & 0xff)))\\x$(printf '%02x' $(((ENTRY_NUM >> 24) & 0xff)))" \
+  | dd of="$OUT" bs=1 seek=$((0x18)) conv=notrunc 2>/dev/null
+
 echo "built: $OUT ($(wc -c < "$OUT") bytes)"
 echo "---"
 arm-none-eabi-readelf -h "$OUT" | grep -E "Type:|Machine:|Flags:|Entry point"

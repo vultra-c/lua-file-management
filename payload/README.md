@@ -81,10 +81,26 @@ verify   → 可选：mw 读取模块写入的标记地址
 - ⚠️ 结论：**问题在模块文件本身** —— 手工编码产物缺 `.data`/`.bss` 等段，
   与加载器实测过的真实工具链输出不一致。
 
-**第二轮（本轮）**：改用**真实 GCC 工具链**按 NuttX 官方 `gnu-elf.ld` 构建，
+**第二轮**：改用**真实 GCC 工具链**按 NuttX 官方 `gnu-elf.ld` 构建，
 产出与朋友实机验证通过的模块同构的标准 ET_REL（含 `.text/.data/.bss/.symtab`、
 `.ARM.attributes`、`_stext/_sdata/_sbss` 链接器标签、`module_main` GLOBAL FUNC）。
-请重新下载 `bin/DeepScan.face` 安装后再次点击 `INJECT`，把结果发回。
+
+**第三轮（本轮）**：对照 openvela 加载器源码（`binfmt/elf.c`：
+`entrypt = textalloc + e_entry`；`libs/libc/elf/*`：verify → load → bind → symtab）
+逐条核对后，把 **`e_entry` 从 0 改为 `module_main` 符号值（0x00000001，Thumb 位）**，
+与朋友实机验证通过的模块（`e_entry=module_main`）完全一致。同时 INJECT 面板升级：
+`insmod` 的 **stderr 会被捕获回读**（失败时直接显示固件打印的错误码，如
+`insmod failed: 8`），`lsmod` 解析不到基址时显示原始输出首行——下一步测试无论
+成败都能给出决定性信息。请重新下载 `bin/DeepScan.face` 安装后再次点击 `INJECT`，
+把结果发回（重点看 `insmod` 行的 stderr 部分）。
+
+> 排查依据（openvela 加载器源码，仓库 `re/` 已记录结论）：
+> - `libelf_verifyheader` 只检查 ELF 魔数 / e_type(REL) / `up_checkarch`（e_machine=EM_ARM、
+>   EI_CLASS=32、小端），**不检查 e_flags**；
+> - `libelf_insert` 流程：打开文件 → verify → load 各 SHF_ALLOC 段 → bind（本模块零重定位、
+>   零未定义符号，必然通过）→ 导入自身 symtab → 注册。
+> - 因此只要文件不是被截断的非法 ELF，静态上必然能过；若实机仍报 65280，
+>   新面板的 stderr 捕获会直接给出固件侧的 errno，据此即可定位是哪个环节被拒。
 
 ## 关键机制（实机验证结论）
 

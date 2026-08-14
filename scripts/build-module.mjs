@@ -100,10 +100,12 @@ const symtab = Buffer.concat([
   Buffer.concat([u32(1), u32(0), u32(textSize), Buffer.from([0x12, 0]), u16(1)]),
 ]);
 
-// ELF 头
+// ELF 头。e_entry = 1（module_main 的 Thumb 位偏移）：openvela 加载器按
+// entrypt = textalloc + e_entry 计算模块入口（binfmt/elf.c），与朋友实机验证
+// 通过的模块（e_entry=module_main）保持一致。
 const ident = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x01, 0x01, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
 const elf = Buffer.concat([
-  ident, u16(1), u16(40), u32(1), u32(0), u32(0), u32(shoff),
+  ident, u16(1), u16(40), u32(1), u32(1), u32(0), u32(shoff),
   u32(0x05000000), u16(ehsize), u16(0), u16(0), u16(shentsize), u16(shnum), u16(shstrndx),
   text, symtab, strtab, shstrtab, ...sections,
 ]);
@@ -114,6 +116,7 @@ chk(elf.readUInt32LE(0) === 0x464c457f, "ELF magic");
 chk(elf[4] === 1 && elf[5] === 1, "class/data (32LE)");
 chk(elf.readUInt16LE(0x12) === 40, "e_machine EM_ARM");
 chk(elf.readUInt16LE(0x10) === 1, "e_type ET_REL");
+chk(elf.readUInt32LE(0x18) === 1, "e_entry = module_main (Thumb)");
 chk(elf.readUInt16LE(0x30) === shnum && elf.readUInt16LE(0x32) === shstrndx, "section count/strndx");
 chk(textSize === 36, "text size 36 bytes, got " + textSize);
 chk(elf.subarray(textOff, textOff + 2).equals(u16(0xb580)), "first insn push {r7,lr}");

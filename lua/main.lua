@@ -312,6 +312,21 @@ local function shellExec(cmd)
   return success, string.format("%s %s", tostring(kind or ""), tostring(code or ""))
 end
 
+-- 执行命令并把 stdout+stderr 重定向到临时文件后回读：失败时能看到具体错误
+-- （如 "insmod failed: <errno>"），比只拿退出码更能定位加载被拒的原因。
+local function shellExecCapture(cmd)
+  local tmp = INJECT.ko_path .. ".err"
+  local ok, det = shellExec(cmd .. " > " .. tmp .. " 2>&1")
+  local out = nil
+  local f = openFile(tmp, "r")
+  if f then
+    pcall(function() out = f:read("*a") end)
+    pcall(function() f:close() end)
+  end
+  pcall(function() os.remove(tmp) end)
+  return ok, det, tostring(out or "")
+end
+
 -- 捕获命令输出：优先 io.popen，否则重定向到临时文件再读回（pcall 保护）
 local function shellCapture(cmd)
   if io and type(io.popen) == "function" then
@@ -432,18 +447,32 @@ local function runInject()
   end
 
   -- 2) insmod 加载（只加载，不执行入口）。先试 2 参数形式，失败再试 1 参数形式。
-  local ok2, d2 = shellExec("insmod " .. INJECT.ko_path .. " " .. INJECT.mod_name)
+  --    两种形式都带 stderr 捕获：失败时能看到固件打印的具体错误码。
+  local function tryInsmod(cmd)
+    local ok, det, err = shellExecCapture(cmd)
+    local detail = det
+    if err ~= "" then
+      detail = detail .. " | " .. rtruncate(err:gsub("%s+", " "), 44)
+    end
+    return ok, detail
+  end
+  local ok2, d2 = tryInsmod("insmod " .. INJECT.ko_path .. " " .. INJECT.mod_name)
   if not ok2 then
-    local ok2b, d2b = shellExec("insmod " .. INJECT.ko_path)
+    local ok2b, d2b = tryInsmod("insmod " .. INJECT.ko_path)
     step("insmod", ok2b, ok2b and d2b or (d2b .. "  (2-arg also failed: " .. d2 .. ")"))
   else
     step("insmod", ok2, d2)
   end
 
-  -- 3) lsmod 现场解析模块基址
+  -- 3) lsmod 现场解析模块基址；解析不到时给出原始输出首行，便于判断命令是否真的可用
   local ok3, out3 = shellCapture("lsmod")
   local base = ok3 and lsmodBase(out3, INJECT.mod_name) or nil
-  step("lsmod", base ~= nil, base and string.format("base 0x%X", base) or "base not found")
+  local lsmodNote = ""
+  if not base and ok3 and tostring(out3) ~= "" then
+    local first = tostring(out3):gsub("^%s+", ""):match("^[^\r\n]*") or ""
+    lsmodNote = " | " .. rtruncate(first, 40)
+  end
+  step("lsmod", base ~= nil, base and string.format("base 0x%X", base) or ("base not found" .. lsmodNote))
 
   -- 4) exec <base+1> 执行入口
   if base then
