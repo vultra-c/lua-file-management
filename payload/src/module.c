@@ -15,11 +15,13 @@
  *   arm-none-eabi-ld -r -T payload/gnu-elf.ld module.o -o module.ko
  */
 
-/* 强制产生 .data / .bss 段：真实工具链链接产物通常都带这两个段，
- * 部分旧式 modlib 按段名查找 .text/.data/.bss，缺段会被拒（insmod exit 65280）。
- * 这里只确保段存在，代码并不引用它们（保持零重定位，降低加载器要求）。 */
-static unsigned int s_dummy_data = 0x5EEDD00D; /* -> .data */
-static unsigned int s_dummy_bss;               /* -> .bss  */
+/* 强制产生「非空」的 .data / .bss 段：部分定制 modlib 按段名查找
+ * .text/.data/.bss 并要求段真实存在且有内容；`used` 属性让 GCC 即使
+ * 未被引用也不剔除（不会生成任何重定位，保持零重定位、零外部符号）。
+ * 早期 366 字节手工模块缺这些段被 insmod 拒（exit 65280），真实工具链
+ * 产物（如朋友 Rust 模块）都带真实内容的数据段。 */
+static unsigned int s_dummy_data __attribute__((used)) = 0x5EEDD00D; /* -> .data（4B 真实内容） */
+static unsigned int s_dummy_bss  __attribute__((used));              /* -> .bss（4B 真实内容） */
 
 void module_main(void)
 {

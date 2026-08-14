@@ -509,6 +509,37 @@ local function runInject()
     step("elf", false, "cannot read header")
   end
 
+  -- 1.7) shell 探针：区分「命令不存在」与「加载器拒绝」。
+  --      * probe echo  : os.execute 是否真的执行命令（echo 应 exit 0 且有输出）
+  --      * probe redir  : 输出重定向 + 回读是否生效（决定 stderr 捕获可不可信）
+  --      * probe insmod : 无参数跑 insmod；能打出 usage 文本 → 命令存在，
+  --                        拒绝是模块/加载器问题；exit 255 且无输出 → 命令不存在。
+  local function probeLine(tag, ok, text)
+    lines[#lines + 1] = string.format("%-12s %s %s", tag, ok and "OK" or "FAIL", text or "")
+  end
+  local function probeCmd(tag, cmd, maxout)
+    local ok, det = shellExec(cmd)
+    local _, out = shellCapture(cmd)
+    local o = tostring(out or ""):gsub("[%s]+$", "")
+    probeLine(tag, ok, det .. ((#o > 0) and (" | " .. rtruncate(o, maxout or 22)) or ""))
+  end
+  probeCmd("probe echo", "echo ok", 10)
+  local rtmp = INJECT.ko_path .. ".t"
+  local okR, detR = shellExec("echo ok > " .. rtmp .. " 2>&1")
+  local rhex, rsz = readBackHead(rtmp, 8)
+  pcall(function() os.remove(rtmp) end)
+  probeLine("probe redir", okR and rhex ~= nil, detR .. (rsz and (" | file " .. rsz .. "B") or " | no file"))
+  local okI, detI = shellExec("insmod")
+  local _, outI = shellCapture("insmod")
+  local oI = tostring(outI or ""):gsub("[%s]+$", "")
+  if #oI > 0 then
+    probeLine("probe insmod", true, "cmd exists | " .. rtruncate(oI, 30))
+  elseif okI then
+    probeLine("probe insmod", true, "cmd exists (exit 0)")
+  else
+    probeLine("probe insmod", false, detI .. " no output -> likely absent")
+  end
+
   -- 2) insmod 加载（只加载，不执行入口）。先试 2 参数形式，失败再试 1 参数形式。
   --    两种形式都带 stderr 捕获：失败时能看到固件打印的具体错误码。
   local function tryInsmod(cmd)
@@ -589,6 +620,17 @@ local REDUMP_CMDS = {
   { "ls -l /usr/lib",     "ls_usrlib.txt" },
   { "ls -l /system",      "ls_system.txt" },
   { "cat /proc/version",  "cat_proc_version.txt" },
+  -- shell 环境诊断：os.execute 是否可用、insmod/lsmod/exec 命令是否存在、
+  -- 以及系统命令都放在哪个目录（决定能否补全 PATH 后重试）。
+  { "echo ok",            "echo_test.txt" },
+  { "insmod",             "insmod_usage.txt" },
+  { "command -v insmod",  "cmd_insmod.txt" },
+  { "command -v lsmod",   "cmd_lsmod.txt" },
+  { "command -v exec",    "cmd_exec.txt" },
+  { "ls -l /bin",         "ls_bin.txt" },
+  { "ls -l /system/bin",  "ls_system_bin.txt" },
+  { "ls -l /usr/bin",     "ls_usr_bin.txt" },
+  { "ls -l /sbin",        "ls_sbin.txt" },
 }
 
 -- 递归目录树：从 root 出发按深度/条目上限列出真实文件系统结构。

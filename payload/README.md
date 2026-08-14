@@ -113,8 +113,35 @@ verify   → 可选：mw 读取模块写入的标记地址
 52 字节 ELF 头，逐条对照上面的 verify 条件（魔数/class/endian/e_type/e_machine/
 shentsize/shnum/shstrndx/段表范围）。全过 → 文件静态上必然能过 insmod 的
 verify；若 insmod 仍报 65280，`insmod` 行的 stderr 捕获会给出固件侧具体错误码，
-据此即可定位被拒环节。请重新下载 `bin/DeepScan.face` 安装后再次点击 `INJECT`，
-把面板全文发回（重点看 `elf`、`insmod` 两行）。
+据此即可定位被拒环节。
+
+**第五轮（实机结果 + shell 探针）**：实机复测结果：`write OK 1264 B`、`readback OK`
+（ELF 头完整）、**`elf OK (ET_REL/ARM entry=0x1)`** —— 文件静态上完全合格；但
+`insmod FAIL exit 65280` 且 **stderr 捕获为空**，`lsmod` 也**无任何输出**（连表头
+都没有）。这个组合强烈指向：**表盘 `os.execute` 的 shell 里根本没有 `insmod`/
+`lsmod` 命令**（命令不存在时 shell 直接返回 255，且不打印 stderr）。
+
+因此本轮加了三个单行探针（`probe echo` / `probe redir` / `probe insmod`）：
+
+- `probe echo`：`os.execute("echo ok")` 是否真的执行（exit 0 + 有输出）；
+- `probe redir`：`echo ok > 文件` 后回读，验证重定向/捕获机制是否生效
+  （决定 stderr 捕获可不可信）；
+- `probe insmod`：无参数跑 `insmod`——能打出 usage 文本 = 命令存在（拒绝是
+  模块/加载器问题）；exit 255 且无输出 = **命令不存在**。
+
+同时把模块的 `.data`/`.bss` 从「size=0 空段」改成 **`__attribute__((used))` 的
+真实 4 字节内容**（1356 字节，仍零重定位、零外部符号、e_entry=1），排除「定制
+modlib 要求数据段必须有真实内容」这一类拒绝。`DUMP` 面板也新增了 `echo_test`/
+`insmod_usage`/`cmd_insmod`/`ls_bin` 等诊断文件，能看到系统命令实际放在哪个目录。
+
+请重新下载 `bin/DeepScan.face` 安装后再次点击 `INJECT`，**把面板全文发回**。
+判读：
+
+1. `probe echo` FAIL → `os.execute` 本身不可用，整条 insmod 路线在本机跑不通；
+2. `probe echo` OK 但 `probe insmod` FAIL（无输出）→ 该 shell 没有 insmod，
+   需要换执行通道（见 `re/README.md` 的 P0，或从 `ls_bin.txt` 找命令目录补 PATH）；
+3. `probe insmod` OK（有 usage 文本）→ 命令存在，但拒绝我们的模块：把
+   `insmod` 行 stderr 发回即可定位具体 errno。
 
 > 排查依据（openvela 加载器源码，仓库 `re/` 已记录结论）：
 > - `libelf_verifyheader` 只检查 ELF 魔数 / e_type(REL) / `up_checkarch`（e_machine=EM_ARM、
