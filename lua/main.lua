@@ -421,6 +421,44 @@ local function readBackHead(p, n)
   return table.concat(hex, " "), sz
 end
 
+-- 读取并解码 ELF 头（52 字节）：insmod 之前在设备端逐条对照加载器
+-- verify 阶段的条件（魔数 / e_type=ET_REL / 架构 / 段表范围），
+-- 失败时能区分「文件没写对」和「加载器拒绝」。
+local function readElfHeader(p)
+  local f
+  if io and type(io.open) == "function" then
+    local okf, ff = pcall(io.open, p, "rb")
+    if okf and ff then f = ff end
+  end
+  if not f and lvgl.fs and type(lvgl.fs.open_file) == "function" then
+    local okf, ff = pcall(lvgl.fs.open_file, p, "r")
+    if okf and ff then f = ff end
+  end
+  if not f then return nil end
+  local data = nil
+  pcall(function() data = f:read(52) end)
+  pcall(function() f:close() end)
+  if type(data) ~= "string" or #data < 52 then return nil end
+  local function u16(o) return data:byte(o) + data:byte(o + 1) * 256 end
+  local function u32(o)
+    local b = { data:byte(o, o + 3) }
+    return b[1] + b[2] * 256 + b[3] * 65536 + b[4] * 16777216
+  end
+  return {
+    magic = u32(1),       -- 0x7F454C46
+    cls = data:byte(5),   -- 1 = ELFCLASS32
+    endian = data:byte(6), -- 1 = ELFDATA2LSB
+    etype = u16(17),      -- 1 = ET_REL
+    machine = u16(19),    -- 40 = EM_ARM
+    eentry = u32(25),     -- module_main（Thumb 位 = 1）
+    shoff = u32(33),      -- 段表偏移
+    ehsize = u16(41),
+    shentsize = u16(47),
+    shnum = u16(49),
+    shstrndx = u16(51),
+  }
+end
+
 local function runInject()
   local lines = {}
   local function step(tag, ok, detail)
@@ -444,6 +482,31 @@ local function runInject()
     step("readback", rbSize == #PAYLOAD, string.format("%d B  %s", rbSize or -1, rbHead))
   else
     step("readback", false, "cannot read file")
+  end
+
+  -- 1.6) ELF 结构预检：insmod 前用 Lua 解码 ELF 头，逐条对照加载器
+  --      verify 阶段的条件（魔数 / ET_REL / ARM32LE / 段表范围）。
+  --      全过 → 文件本身静态上必然能过 insmod 的 verify；insmod 仍失败
+  --      则说明是固件 modlib 的其它环节（见 insmod 行的 stderr）。
+  local hdr = readElfHeader(INJECT.ko_path)
+  if hdr then
+    local fails = {}
+    if hdr.magic ~= 0x464c457f then fails[#fails + 1] = "magic" end
+    if hdr.cls ~= 1 then fails[#fails + 1] = "class" end
+    if hdr.endian ~= 1 then fails[#fails + 1] = "endian" end
+    if hdr.etype ~= 1 then fails[#fails + 1] = "e_type" end
+    if hdr.machine ~= 40 then fails[#fails + 1] = "e_machine" end
+    if hdr.shentsize ~= 40 then fails[#fails + 1] = "shentsize" end
+    if hdr.shnum < 1 then fails[#fails + 1] = "shnum" end
+    if hdr.shstrndx >= hdr.shnum then fails[#fails + 1] = "shstrndx" end
+    if hdr.shoff + hdr.shnum * hdr.shentsize > (rbSize or 0) then fails[#fails + 1] = "shtable" end
+    if #fails == 0 then
+      step("elf", true, string.format("ET_REL/ARM ok entry=0x%X", hdr.eentry))
+    else
+      step("elf", false, "bad: " .. table.concat(fails, ","))
+    end
+  else
+    step("elf", false, "cannot read header")
   end
 
   -- 2) insmod 加载（只加载，不执行入口）。先试 2 参数形式，失败再试 1 参数形式。

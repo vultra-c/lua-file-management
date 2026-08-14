@@ -85,14 +85,36 @@ verify   → 可选：mw 读取模块写入的标记地址
 产出与朋友实机验证通过的模块同构的标准 ET_REL（含 `.text/.data/.bss/.symtab`、
 `.ARM.attributes`、`_stext/_sdata/_sbss` 链接器标签、`module_main` GLOBAL FUNC）。
 
-**第三轮（本轮）**：对照 openvela 加载器源码（`binfmt/elf.c`：
+**第三轮**：对照 openvela 加载器源码（`binfmt/elf.c`：
 `entrypt = textalloc + e_entry`；`libs/libc/elf/*`：verify → load → bind → symtab）
 逐条核对后，把 **`e_entry` 从 0 改为 `module_main` 符号值（0x00000001，Thumb 位）**，
 与朋友实机验证通过的模块（`e_entry=module_main`）完全一致。同时 INJECT 面板升级：
 `insmod` 的 **stderr 会被捕获回读**（失败时直接显示固件打印的错误码，如
-`insmod failed: 8`），`lsmod` 解析不到基址时显示原始输出首行——下一步测试无论
-成败都能给出决定性信息。请重新下载 `bin/DeepScan.face` 安装后再次点击 `INJECT`，
-把结果发回（重点看 `insmod` 行的 stderr 部分）。
+`insmod failed: 8`），`lsmod` 解析不到基址时显示原始输出首行。
+
+**第四轮（本轮，加载器源码级核对）**：把两套参考实现的 modlib 源码逐条拉下来核对：
+
+- **NuttX 10.3.0 官方**（`libs/libc/modlib/*`，与本机固件版本串 `NuttX.10.3.0.86ac2747e4` 同源）：
+  - `modlib_verify`：只查 **ELF 魔数 + `e_type==ET_REL` + `up_checkarch`**（e_machine=EM_ARM、
+    ELFCLASS32、小端），**不查 e_flags / 段名 / .data 是否存在**；
+  - `modlib_loadshdrs`：`e_shnum >= 1` 且 `e_shoff + e_shentsize*e_shnum <= 文件长度`；
+  - `modlib_loadfile`：只处理 `SHF_ALLOC` 段，**size=0 的段直接跳过**（所以空的
+    `.data/.bss` 无碍），`SHT_NOBITS` 段 memset；
+  - `modlib_bind`：要求存在 **`.symtab`**；本模块零重定位、零未定义符号，必然通过。
+- **openvela 分支**（`libs/libc/elf/*`）：`libelf_verifyheader` 只查魔数 +
+  `e_type ∈ {ET_REL, ET_DYN, ET_EXEC}` + `up_checkarch`；加载逻辑同上。
+
+结论：**当前 GCC 构建的 `module.ko` 通过两套加载器的全部静态检查**（可复现：
+`bash scripts/build-ko.sh` 产物与仓库内 `payload/module.ko` 逐字节一致）。
+之前 366 字节手工模块的 65280 失败，差异点在于：缺 `.data/.bss` 等段、段表未
+4 字节对齐、符号表结构不完整——与真实工具链产物不同构。
+
+同时 INJECT 面板再加一层**设备端 ELF 结构预检（`elf` 步）**：写盘后用 Lua 解码
+52 字节 ELF 头，逐条对照上面的 verify 条件（魔数/class/endian/e_type/e_machine/
+shentsize/shnum/shstrndx/段表范围）。全过 → 文件静态上必然能过 insmod 的
+verify；若 insmod 仍报 65280，`insmod` 行的 stderr 捕获会给出固件侧具体错误码，
+据此即可定位被拒环节。请重新下载 `bin/DeepScan.face` 安装后再次点击 `INJECT`，
+把面板全文发回（重点看 `elf`、`insmod` 两行）。
 
 > 排查依据（openvela 加载器源码，仓库 `re/` 已记录结论）：
 > - `libelf_verifyheader` 只检查 ELF 魔数 / e_type(REL) / `up_checkarch`（e_machine=EM_ARM、
