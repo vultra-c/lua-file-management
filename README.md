@@ -52,7 +52,7 @@ scripts/gen-preview.mjs      # 预览图生成脚本（纯 Node，无依赖）
 | 顶栏 `<` | 进入上一级目录 |
 | 顶栏 `i` | 显示系统能力探测结果（面板内还有 `DUMP` / `INJECT`） |
 | 面板 `DUMP` | 一键采集运行时逆向样本到 `/data/deepscan_dump.txt`（单文件）及 `/data/deepscan_re/`（分条） |
-| 面板 `INJECT` | 执行原生代码注入链（需 `payload/module.ko`） |
+| 面板 `INJECT` | 执行原生代码注入链（需 `payload/module.ko`），并输出**环境诊断**（`echo`/`bogus` 控制组/`insmod`/`lsmod`/`exec`/`mw`/`md`/`devmem`/`busybox` 存在性、PATH、命令目录）；全部原始输出写 `/data/deepscan_inject_diag.txt` |
 | 底部 `<` / `>` | 分页浏览（每页 6 行） |
 
 ### 删除
@@ -100,7 +100,9 @@ exec   → os.execute("exec <base+1>")                                # Thumb �
 verify → 可选：mw 读取模块写入的标记地址
 ```
 
-关键机制（实机验证结论）：insmod 只加载不执行；模块文本分配在 0x3D PSRAM 可执行区且地址每次动态变化，需从 `lsmod` 现场解析；`exec <base+1>` 以函数调用跳转、模块 `pop{r7,pc}` 干净返回；固件 Lua 5.4 `tonumber` 不认 `0x` 前缀需手动剥离。入口地址**无需手填**，代码自动解析。
+关键机制（朋友设备上的实机验证结论）：insmod 只加载不执行；模块文本分配在 0x3D PSRAM 可执行区且地址每次动态变化，需从 `lsmod` 现场解析；`exec <base+1>` 以函数调用跳转、模块 `pop{r7,pc}` 干净返回；固件 Lua 5.4 `tonumber` 不认 `0x` 前缀需手动剥离。入口地址**无需手填**，代码自动解析。
+
+> ⚠️ **当前设备的判定进度**：本机零售固件上 `write`/`readback`/ELF 预检全部通过，但 `insmod` 稳定返回 `exit 65280` 且无 stderr、`lsmod` 无任何输出；固件 50MB 明文区也零次出现 `insmod`/`lsmod`/`modlib`/`busybox` 字符串（AP 镜像加密无法静态确认）。INJECT 面板已加 `bogus` 控制组探针定案：若 `bogus`（必然不存在的命令）与 `insmod` 表现完全一致，则本固件 shell 里没有 `insmod`，原生注入需另寻执行通道。一次 `INJECT` 的全部探针原始输出在 `/data/deepscan_inject_diag.txt`。
 
 > ⚠️ “出现在应用列表 + 系统原生 UI”仍需进一步逆向：模块要调用固件的 UI 框架（LVX 渲染层）并注册到应用列表（`app_install`/`launcher_add`）。这需要**设备运行时样本**做符号分析——见下节「关于系统原生 UI」与 `re/README.md`。
 

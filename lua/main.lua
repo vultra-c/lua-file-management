@@ -281,7 +281,7 @@ local entries = {}
 local pageIdx = 0
 
 -- 前向声明
-local navigate, goUp, render, showFileInfo, confirmDelete, doDelete, hideDialog, showInfo, hideInfo
+local navigate, goUp, render, showFileInfo, confirmDelete, doDelete, hideDialog, showInfo, hideInfo, writeFile
 
 -- ---- 原生应用注入（ELF 注入闭环，已实机验证的调用链；pcall 保护，仅手动触发）----
 -- 验证过的完整链：写 .ko → insmod → lsmod 解析模块基址 → exec <base+1>。
@@ -509,36 +509,86 @@ local function runInject()
     step("elf", false, "cannot read header")
   end
 
-  -- 1.7) shell 探针：区分「命令不存在」与「加载器拒绝」。
-  --      * probe echo  : os.execute 是否真的执行命令（echo 应 exit 0 且有输出）
-  --      * probe redir  : 输出重定向 + 回读是否生效（决定 stderr 捕获可不可信）
-  --      * probe insmod : 无参数跑 insmod；能打出 usage 文本 → 命令存在，
-  --                        拒绝是模块/加载器问题；exit 255 且无输出 → 命令不存在。
-  local function probeLine(tag, ok, text)
-    lines[#lines + 1] = string.format("%-12s %s %s", tag, ok and "OK" or "FAIL", text or "")
+  -- 1.7) 环境探针：一次性回答「os.execute 是否可用 / shell 里有没有
+  --      insmod·lsmod·exec·mw·md·devmem·busybox / PATH / 命令都在哪个目录」。
+  --      * 每个探针 = 一次 os.execute + 输出重定向捕获；全部原始输出写入
+  --        /data/deepscan_inject_diag.txt（面板只显示一行结论，文件里有全量）。
+  --      判读：
+  --        echo OK      → os.execute 真的执行命令
+  --        false        → 校准退出码（false=exit 1；若显示 256 = 原始 wait status 1<<8）
+  --        bogus        → 控制组（必然不存在的命令）。若 bogus 与 insmod 表现完全一致
+  --                        （exit 65280 + 无输出）→ insmod 同样不存在。
+  --        insmod/lsmod/exec/mw/md/devmem/busybox 无参数跑：有 usage 文本 = 命令存在。
+  local diag = {}
+  local function dlog(fmt, ...)
+    diag[#diag + 1] = string.format(fmt, ...)
   end
-  local function probeCmd(tag, cmd, maxout)
-    local ok, det = shellExec(cmd)
-    local _, out = shellCapture(cmd)
-    local o = tostring(out or ""):gsub("[%s]+$", "")
-    probeLine(tag, ok, det .. ((#o > 0) and (" | " .. rtruncate(o, maxout or 22)) or ""))
+  local function probeRun(tag, cmd)
+    local tmp = INJECT.ko_path .. ".pr"
+    local ok, det = shellExec(cmd .. " > " .. tmp .. " 2>&1")
+    local out = nil
+    local f = openFile(tmp, "r")
+    if f then
+      pcall(function() out = f:read("*a") end)
+      pcall(function() f:close() end)
+    end
+    pcall(function() os.remove(tmp) end)
+    out = tostring(out or ""):gsub("[\r\n]+$", "")
+    dlog("[%s] cmd: %s\n    exit: %s\n    out:\n%s\n", tag, cmd, det, out)
+    return ok, det, out
   end
-  probeCmd("probe echo", "echo ok", 10)
+  local function probeLine(tag, detail)
+    lines[#lines + 1] = string.format("%-7s %s", tag, detail or "")
+  end
+
+  -- (a) 基础：os.execute 是否执行 + 退出码校准 + 重定向捕获是否可用
+  local okE, detE = shellExec("echo ok")
+  local okT, detT = shellExec("true")
+  local okF, detF = shellExec("false")
+  dlog("[cal] echo ok -> %s | true -> %s | false -> %s\n", detE, detT, detF)
+  probeLine("echo", detE)
+  probeLine("false", detF)
   local rtmp = INJECT.ko_path .. ".t"
   local okR, detR = shellExec("echo ok > " .. rtmp .. " 2>&1")
   local rhex, rsz = readBackHead(rtmp, 8)
   pcall(function() os.remove(rtmp) end)
-  probeLine("probe redir", okR and rhex ~= nil, detR .. (rsz and (" | file " .. rsz .. "B") or " | no file"))
-  local okI, detI = shellExec("insmod")
-  local _, outI = shellCapture("insmod")
-  local oI = tostring(outI or ""):gsub("[%s]+$", "")
-  if #oI > 0 then
-    probeLine("probe insmod", true, "cmd exists | " .. rtruncate(oI, 30))
-  elseif okI then
-    probeLine("probe insmod", true, "cmd exists (exit 0)")
-  else
-    probeLine("probe insmod", false, detI .. " no output -> likely absent")
+  local redirDetail = (okR and rhex ~= nil) and ("OK file " .. tostring(rsz or 0) .. "B") or ("FAIL " .. detR)
+  probeLine("redir", redirDetail)
+  dlog("[redir] echo ok > %s -> %s | readback %s %s\n", rtmp, detR, rsz or "-", rhex or "-")
+
+  -- (b) 控制组 + 命令存在性探针（无参数跑：有 usage 文本 = 命令存在）
+  local function probeExists(tag, cmd)
+    local ok, det, out = probeRun(tag, cmd)
+    local o = out:gsub("%s+$", "")
+    if #o > 0 then
+      probeLine(tag, "EXISTS | " .. rtruncate(o:gsub("%s+", " "), 24))
+    elseif ok then
+      probeLine(tag, "EXISTS (exit 0)")
+    else
+      probeLine(tag, det .. " no out")
+    end
   end
+  probeExists("bogus", "no_such_cmd_xyz_777") -- 控制组：必然不存在的命令
+  probeExists("insmod", "insmod")
+  probeExists("lsmod", "lsmod")
+  probeExists("exec", "exec")
+  probeExists("mw", "mw")
+  probeExists("md", "md")
+  probeExists("devmem", "devmem")
+  probeExists("busybox", "busybox --list")
+
+  -- (c) PATH / command -v / 命令目录 / shell 是否能看到 .ko / 系统信息
+  local _, _, pathOut = probeRun("path", "echo $PATH")
+  probeLine("PATH", rtruncate(pathOut:gsub("%s+", " "), 24))
+  local _, _, cvOut = probeRun("cmd-v", "command -v insmod; command -v lsmod; command -v exec; command -v busybox; command -v sh; command -v ls; command -v cat; command -v dd")
+  probeLine("cmd-v", rtruncate(cvOut:gsub("%s+", " "), 28))
+  local _, _, binOut = probeRun("bins", "ls -ld /bin /sbin /usr/bin /system/bin /system/xbin /usr/sbin 2>&1")
+  probeLine("bins", rtruncate(binOut:gsub("%s+", " "), 28))
+  local _, _, lskoOut = probeRun("lsko", "ls -l " .. INJECT.ko_path)
+  probeLine("lsko", rtruncate(lskoOut:gsub("%s+", " "), 26))
+  probeRun("ver", "uname -a")
+  probeRun("mount", "mount")
+  probeRun("proc", "cat /proc/version")
 
   -- 2) insmod 加载（只加载，不执行入口）。先试 2 参数形式，失败再试 1 参数形式。
   --    两种形式都带 stderr 捕获：失败时能看到固件打印的具体错误码。
@@ -548,6 +598,7 @@ local function runInject()
     if err ~= "" then
       detail = detail .. " | " .. rtruncate(err:gsub("%s+", " "), 44)
     end
+    dlog("[chain] %s\n    exit: %s\n    err: %s\n", cmd, det, err)
     return ok, detail
   end
   local ok2, d2 = tryInsmod("insmod " .. INJECT.ko_path .. " " .. INJECT.mod_name)
@@ -560,6 +611,7 @@ local function runInject()
 
   -- 3) lsmod 现场解析模块基址；解析不到时给出原始输出首行，便于判断命令是否真的可用
   local ok3, out3 = shellCapture("lsmod")
+  dlog("[chain] lsmod\n    ok: %s\n    out:\n%s\n", tostring(ok3), tostring(out3 or ""))
   local base = ok3 and lsmodBase(out3, INJECT.mod_name) or nil
   local lsmodNote = ""
   if not base and ok3 and tostring(out3) ~= "" then
@@ -583,7 +635,11 @@ local function runInject()
     step("verify", ok5, ok5 and (tostring(out5):gsub("%s+$", "")) or nil)
   end
 
-  showInfo("NATIVE INJECT", table.concat(lines, "\n"), "chain: write -> insmod -> lsmod -> exec")
+  -- 写全量诊断日志：面板只显示结论，所有探针/链路的原始输出都在这个文件里
+  local dpath = "/data/deepscan_inject_diag.txt"
+  local logOk = writeFile(dpath, table.concat(diag, "\n") .. "\n")
+  showInfo("NATIVE INJECT", table.concat(lines, "\n"),
+    "log: " .. dpath .. (logOk and "" or " (write failed)") .. " | chain: write->insmod->lsmod->exec")
 end
 
 -- ---- 运行时逆向采集（RE DUMP）----
@@ -663,7 +719,7 @@ local function walkTree(root, maxDepth, budget)
   return table.concat(out, "\n") .. "\n"
 end
 
-local function writeFile(path, data)
+writeFile = function(path, data)
   return pcall(function()
     -- 优先用已文档化且实机验证的 lvgl.fs.open_file(path, "w")，io.open("wb") 作兜底
     local f
@@ -933,6 +989,10 @@ showInfo = function(title, body, sub)
   setText(infoTitle, title or "")
   setText(infoBody, body or "")
   setText(infoSub, sub or "")
+  -- 长文本（INJECT/DUMP 面板）自动缩小字号，让更多行可见；短文本保持 16
+  local nl = 0
+  for _ in tostring(body or ""):gmatch("\n") do nl = nl + 1 end
+  pcall(function() infoBody:set({ text_font = font(nl >= 9 and 14 or 16) }) end)
   pcall(function() infoDialog:set({ hidden = false }) end)
 end
 

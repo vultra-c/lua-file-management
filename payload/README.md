@@ -151,6 +151,34 @@ modlib 要求数据段必须有真实内容」这一类拒绝。`DUMP` 面板也
 > - 因此只要文件不是被截断的非法 ELF，静态上必然能过；若实机仍报 65280，
 >   新面板的 stderr 捕获会直接给出固件侧的 errno，据此即可定位是哪个环节被拒。
 
+**第六轮（诊断版，一次 INJECT 定案）**：固件侧新增证据——整个 50MB 固件明文区
+**零次出现 `insmod`/`lsmod`/`modlib`/`busybox`/`exec` 字符串**（`nsh` 与 `nsh_main`、
+`nsh: %s: missing required argument(s)` 等 NSH 外壳串存在，但 AP 主镜像 `vela_ap.bin`
+加密，外壳到底带不带 insmod 无法静态确认）。因此 INJECT 面板升级为**一次性环境诊断**：
+
+- **控制组 `bogus`**：跑一个必然不存在的命令 `no_such_cmd_xyz_777`。若 bogus 与 insmod
+  的表现**完全一致**（`exit 65280` + 无输出），则 insmod 就是不存在，而不是模块被拒；
+- **`echo` / `true` / `false`**：校准 `os.execute` 是否真执行 + 退出码映射
+  （`false` 若显示 `256` = 原始 wait status `1<<8`，则 `65280` = 退出码 255）；
+- **`insmod` / `lsmod` / `exec` / `mw` / `md` / `devmem` / `busybox --list`**：无参数跑，
+  有 usage 文本 = 命令存在；`exit 65280` 无输出 = 不存在；
+- **`PATH` / `command -v ...` / `ls -ld` 六个命令目录 / `ls -l` 已写好的 .ko**：
+  定位命令实际所在目录（决定能否补 PATH 后重试）与 shell 是否能看到文件；
+- **`uname -a` / `mount` / `cat /proc/version`**：系统与挂载信息。
+
+**所有探针的原始输出**（不只面板摘要）写入 **`/data/deepscan_inject_diag.txt`**，
+面板只显示一行结论，全文用本表盘文件管理器进 `/data` 打开该文件即可完整查看。
+
+判读（安装后点一次 `INJECT`，把面板前 ~12 行截图 + diag 文件全文发回即可）：
+
+1. `echo` FAIL → `os.execute` 本身被宿主裁剪/禁用，整条 shell 路线在本机不通，
+   原生注入只能等社区新的执行通道（文件管理器功能不受影响）；
+2. `echo` OK 且 `bogus` 与 `insmod` 同为 `exit 65280 无输出` → **insmod 不存在**，
+   `lsmod`/`exec` 大概率同样缺失；此时再看 `bins`/`cmd-v`/diag 里的 `ls -l` 输出
+   找出实际存在的命令目录与可用命令（如 `ls`/`cat`/`dd`/`mw`/`md`），再决定备选通道；
+3. `insmod` EXISTS（有 usage 文本）→ 命令在但拒绝我们的模块：把 insmod 行
+   stderr（diag 文件里）发回即可定位具体 errno。
+
 ## 关键机制（实机验证结论）
 
 - **insmod 只加载不执行**：`insmod <path> <name>` 返回 `true, exit, 0` 表示成功；
