@@ -357,22 +357,53 @@ local function lsmodBase(out, modName)
   return nil
 end
 
+-- 二进制写：优先 io.open(path, "wb")（二进制安全，遇 \0 不截断）；
+-- lvgl.fs.open_file("w") 某些固件按 C 字符串写入，遇到 ELF 头里的 \0 会把文件截断，
+-- 导致 insmod 把它当非法 ELF（exit 65280）。写完后统一回读校验。
 local function injectWritePayload()
   if not PAYLOAD or #PAYLOAD == 0 then return false, "no embedded payload" end
+  local written = 0
   local ok, err = pcall(function()
-    -- 优先用已文档化且实机验证的 lvgl.fs.open_file(path, "w")
     local f
-    if lvgl.fs and type(lvgl.fs.open_file) == "function" then
-      f = lvgl.fs.open_file(INJECT.ko_path, "w")
-    end
-    if not f and io and type(io.open) == "function" then
+    if io and type(io.open) == "function" then
       f = io.open(INJECT.ko_path, "wb") or io.open(INJECT.ko_path, "w")
+    end
+    if not f and lvgl.fs and type(lvgl.fs.open_file) == "function" then
+      f = lvgl.fs.open_file(INJECT.ko_path, "w")
     end
     if not f then error("open failed") end
     f:write(PAYLOAD)
     f:close()
+    written = #PAYLOAD
   end)
-  return ok, err
+  return ok, err, written
+end
+
+-- 回读文件前 n 字节的 hex + 文件大小：验证设备磁盘上的真实字节（写路径是否截断）
+local function readBackHead(p, n)
+  local f
+  if io and type(io.open) == "function" then
+    local okf, ff = pcall(io.open, p, "rb")
+    if okf and ff then f = ff end
+  end
+  if not f and lvgl.fs and type(lvgl.fs.open_file) == "function" then
+    local okf, ff = pcall(lvgl.fs.open_file, p, "r")
+    if okf and ff then f = ff end
+  end
+  if not f then return nil end
+  local data, sz = nil, nil
+  pcall(function() data = f:read(n or 16) end)
+  pcall(function() sz = f:seek(0, "end") end)
+  if type(sz) ~= "number" then
+    pcall(function() sz = f:seek("end") end)
+  end
+  pcall(function() f:close() end)
+  if type(data) ~= "string" then return nil end
+  local hex = {}
+  for i = 1, #data do
+    hex[#hex + 1] = string.format("%02X", data:byte(i))
+  end
+  return table.concat(hex, " "), sz
 end
 
 local function runInject()
@@ -385,16 +416,29 @@ local function runInject()
   end
 
   -- 1) 写 .ko 到可写分区
-  local ok1, e1 = injectWritePayload()
-  step("write", ok1, ok1 and nil or e1)
+  local ok1, e1, written = injectWritePayload()
+  step("write", ok1, ok1 and (written .. " bytes") or e1)
   if not ok1 then
     showInfo("NATIVE INJECT", table.concat(lines, "\n"), "embed payload/module.ko then rebuild")
     return
   end
 
-  -- 2) insmod 加载（只加载，不执行入口）
+  -- 1.5) 回读校验：设备磁盘上的真实字节（若被截断，头部 hex 会明显变短/变样）
+  local rbHead, rbSize = readBackHead(INJECT.ko_path, 16)
+  if rbHead then
+    step("readback", rbSize == #PAYLOAD, string.format("%d B  %s", rbSize or -1, rbHead))
+  else
+    step("readback", false, "cannot read file")
+  end
+
+  -- 2) insmod 加载（只加载，不执行入口）。先试 2 参数形式，失败再试 1 参数形式。
   local ok2, d2 = shellExec("insmod " .. INJECT.ko_path .. " " .. INJECT.mod_name)
-  step("insmod", ok2, d2)
+  if not ok2 then
+    local ok2b, d2b = shellExec("insmod " .. INJECT.ko_path)
+    step("insmod", ok2b, ok2b and d2b or (d2b .. "  (2-arg also failed: " .. d2 .. ")"))
+  else
+    step("insmod", ok2, d2)
+  end
 
   -- 3) lsmod 现场解析模块基址
   local ok3, out3 = shellCapture("lsmod")

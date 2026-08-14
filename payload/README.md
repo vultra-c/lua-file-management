@@ -39,14 +39,35 @@ bun scripts/build-face.mjs
 ELF 注入闭环**执行：
 
 ```
-write  → 把 PAYLOAD 写到 /data/deepscan_module.ko
-insmod → os.execute("insmod /data/deepscan_module.ko deepscan")   # modlib 加载
-lsmod  → os.execute("lsmod") 解析模块基址（第 5 列 = textalloc）
-exec   → os.execute("exec <base+1>")                               # Thumb 位跳入入口
-verify → 可选：mw 读取模块写入的标记地址
+write    → 把 PAYLOAD 写到 /data/deepscan_module.ko（优先 io.open("wb")，二进制安全）
+readback → 回读文件前 16 字节 hex + 文件大小，确认设备磁盘上是完整 ELF
+insmod   → os.execute("insmod <path> <name>")；失败自动重试 1 参数形式   # modlib 加载
+lsmod    → os.execute("lsmod") 解析模块基址（第 5 列 = textalloc）
+exec     → os.execute("exec <base+1>")                               # Thumb 位跳入入口
+verify   → 可选：mw 读取模块写入的标记地址
 ```
 
 每步结果实时显示在表盘上，哪一步失败一目了然。
+
+### 实测：insmod exit 65280（2026-08-14）
+
+`write OK` 但 `insmod FAIL (exit 65280)`。65280 正是 insmod 拒绝该文件为
+非法 ELF / 打不开文件的返回码。排查结论：
+
+- ✅ face 内嵌 PAYLOAD 与 `payload/module.ko` **逐字节一致**（`scripts/verify-payload.mjs` 自校验）。
+- ✅ 模块结构符合 openvela `libc/elf` 加载器要求（ET_REL / EM_ARM / `.text` / `.symtab` / 无重定位 OK）。
+- ⚠️ **最大嫌疑：写入路径按 C 字符串处理**。旧版 `injectWritePayload` 优先用
+  `lvgl.fs.open_file(path, "w")`，某些固件该 API 按 C 字符串写，遇到 ELF 头里的
+  `\0`（第 7 字节起连续 9 个 `\0`）就会截断文件 → insmod 看到的是残缺文件。
+  朋友验证链用的是 `io.open` 写 .ko。
+
+新版表盘已改为：**二进制写优先 `io.open(path, "wb")`**，并在 write 后新增
+**`readback`** 步骤（显示磁盘上文件真实大小 + 前 16 字节 hex），一次点击就能
+确认设备上的字节是否完好：
+
+- 头部显示 `7F 45 4C 46 01 01 01 00 ...` 且大小 366 → 写盘完好，问题在加载器，继续查。
+- 头部只有 `7F 45 4C 46 01 01 01` 就没了 / 大小 < 366 → 写入被截断，实锤。
+- 也可用表盘文件管理器直接看 `/data/deepscan_module.ko` 的大小核对。
 
 ## 关键机制（实机验证结论）
 
