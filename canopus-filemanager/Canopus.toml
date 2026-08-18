@@ -1,0 +1,35 @@
+# Canopus module configuration — 文件管理器原生应用
+# 结构完全对齐 Searchstars/Canopus-Module-BluetoothAudio（唯一差异：业务层换成文件浏览/删除）。
+# 目标设备：小米手环 9 Pro，固件 3.1.175（xiaomi-band-9-pro-3.1.175）。
+schema = 1
+
+[module]
+id = "org.canopus.filemanager"
+version = "0.1.0"
+language = "rust"
+# 文件管理器不需要常驻（不像蓝牙模块要发布回调），卸载即恢复，无需重启。
+lifecycle = "removable"
+canopus_abi = "1"
+
+[targets]
+include = [
+  "xiaomi-band-9-pro-3.1.175",
+]
+
+[capabilities]
+# 与蓝牙模块一致的能力声明。identity-guard 在公开 target pack 就有；
+# native-app.register / launcher.entry / ui.dispatch 属“需设备校验”的 target-private 调用，
+# 需确认 band-9-pro-3.1.175 的 target pack 里这三个能力完整。
+required = [
+  "identity-guard",
+  "native-app.register",
+  "launcher.entry",
+  "ui.dispatch",
+]
+
+[native_app]
+enabled = true
+app_id = "org.canopus.filemanager"
+name = "Files"
+entry = "canopus_module_descriptor"
+role = "standalone"

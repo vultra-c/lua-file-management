@@ -1,0 +1,12 @@
+[package]
+name = "canopus-runtime"
+version = "0.1.0"
+edition = "2024"
+description = "OFFLINE STUB of the closed-source canopus-runtime crate (local cargo check only)"
+license = "AGPL-3.0"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+canopus-abi = { path = "../canopus-abi" }

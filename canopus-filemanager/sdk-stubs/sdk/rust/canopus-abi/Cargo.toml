@@ -1,0 +1,10 @@
+[package]
+name = "canopus-abi"
+version = "0.1.0"
+edition = "2024"
+description = "OFFLINE STUB of the closed-source canopus-abi crate (local cargo check only)"
+license = "AGPL-3.0"
+
+[lib]
+# 与真实 SDK 保持一致：对设备端链接时仅导出所需符号。
+crate-type = ["staticlib", "rlib"]

@@ -179,6 +179,73 @@ modlib 要求数据段必须有真实内容」这一类拒绝。`DUMP` 面板也
 3. `insmod` EXISTS（有 usage 文本）→ 命令在但拒绝我们的模块：把 insmod 行
    stderr（diag 文件里）发回即可定位具体 errno。
 
+**第七轮（定案：本固件无 modlib，原生注入路线关闭）**：第六轮实机结果 + 全固件
+字符串扫描合并后，结论已收敛，无需再发探针版：
+
+- 实机（n67cn 零售固件）：`echo` → `exit 0`（`os.execute` 真的执行命令）；但
+  `echo ok > 文件` 后回读 **无文件**（shell 的 `>` 重定向不生效），`lsmod` **零输出**
+  （连表头都没有），`insmod` 无论 1 参数还是 2 参数都稳定 `exit 65280` 且无任何
+  stderr —— 与「命令不存在」的 shell 表现完全一致。
+- 模块文件本身已彻底排除：`write OK 1356 B` + `readback` 完整 ELF 头 +
+  设备端 `elf OK (ET_REL/ARM entry=0x1)`，且与 NuttX 10.3.0 `modlib_verify` 的
+  全部静态条件逐一核对通过。文件合格，被拒原因不在文件。
+- 固件侧决定性证据：对 50MB 固件及其全部明文子镜像做字符串扫描，
+  `insmod` / `lsmod` / `rmmod` / `modlib` / `busybox` / `exec` / `module_main` /
+  `modlib_verify` / `up_checkarch` **全部 0 次出现**。AP 主镜像 `vela_ap.bin` 加密，
+  但外围明文镜像（boot/factory/外设固件）同样零 modlib 痕迹。
+
+**结论**：这台 n67cn 的 NuttX 构建**没有编译 CONFIG_MODLIB**，固件里不存在
+`insmod`/`lsmod`/`exec` 这条「写 .ko → insmod → exec」通道。朋友在
+`probe_v104_10P.bin` 上验证通过的 ELF 注入闭环是**另一台设备/固件**（带了 modlib），
+不能移植到这台零售固件。因此「通过 Lua 表盘注入原生应用、出现在应用列表、渲染系统
+原生 UI」这条路在本固件上**已关闭**，不再投入。
+
+**可行的两条现实路线**：
+
+1. **表盘文件管理器（已交付）**：查看 + 删除任意文件，能用；但表盘只出现在
+   表盘选择器里，不进应用列表。
+2. **Vela RPK 快应用**：官方唯一「出现在应用列表 + 原生 UI」通道
+   （`iot.mi.com/vela/quickapp`，小米运动健康 Debug 侧载）。但快应用运行在
+   **沙箱**内，文件系统只开放应用自身数据目录 —— 删除任意系统文件这个核心
+   能力会丢。要这条就走 RPK 重构（另开工作）。
+
+**第八轮（Canopus 路线：固件已确认 3.1.175，可走 AstroBox 原生应用框架）**：
+
+实机固件确认为 **3.1.175**，与 AstroBox（AstralSightStudios）开源的
+`Canopus-App-LyraPlayer` 里 9 Pro 唯一 target pack
+`xiaomi-band-9-pro-3.1.175` **完全一致**（env 内
+`RUST_TARGET_FEATURE=target-xiaomi-band-9-pro-3-1-175`），固件匹配这一硬门槛已通过。
+
+第七轮「原生注入路线关闭」的结论**只针对本机零售固件自带的 modlib 通道**
+（`insmod`/`lsmod`/`exec` 不存在）。AstroBox 团队的 **Canopus** 框架走的是另一条路：
+它往设备里装一个**自己的常驻监督器（supervisor）**（boot-resident、flash-persistent，
+由 AstroBox 工具安装，不依赖零售固件的 modlib），监督器提供 `/dev/canopus` 节点负责
+加载/校验/注册模块。因此本机 modlib 缺失**不阻塞 Canopus**。
+
+Canopus 完整链路（从 LyraPlayer 源码确认）：
+
+```
+一次性安装表盘(表盘)
+  ├─ 把签名过的 Rust 原生模块 ELF + CMI1(Ed25519) 收据写入 /data/canopus/inbox/
+  ├─ 通过 /dev/canopus 请求 supervisor 安装模块
+  └─ 模块调用固件 app_install() + launcher_add()
+       → 注册为系统原生应用 → 出现在应用列表
+       → firmware_page_descriptor 的 on_create/on_resume 回调 + LVX 渲染原生 UI
+```
+
+三个未满足的前置（均闭源，需 AstroBox 提供）：
+
+1. **Canopus SDK**（闭源仓库 `github.com/AstralSightStudios/Canopus`，404）：
+   targets 固件符号包 + verifier CLI + 签名私钥 `module-installer-ed25519.pem`。
+2. **supervisor 安装方式**：如何把 Canopus supervisor 刷进本机
+   （AstroBox-NG 私有模块，`abtools.py init --private`）。
+3. **签名授权**：模块必须过 `identity-guard`（CMI1 收据锁定固件 SHA-256 +
+   模块 SHA-256 + target id，不能自签），需要可信私钥或官方代签。
+
+拿到上述三者后，即可按 LyraPlayer 的 `Canopus.toml` + Rust 模块 + 安装表盘流程，
+把文件管理器做成**签名的原生应用**进应用列表（原生 UI）。在此之前继续用已交付的
+表盘文件管理器。
+
 ## 关键机制（实机验证结论）
 
 - **insmod 只加载不执行**：`insmod <path> <name>` 返回 `true, exit, 0` 表示成功；
