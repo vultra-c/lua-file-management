@@ -21,12 +21,26 @@ extern "C" {
 // ---------------------------------------------------------------------------
 // 原生应用注册（re/canopus/SPEC.md §2）
 // ---------------------------------------------------------------------------
+/// Provisional 9 Pro layout recovered from `app_install` in the bundled AP.
+///
+/// This is intentionally a raw, target-specific layout rather than the older
+/// four-field public sketch: the 3.1.175 image reads the package/name pointer
+/// at +0x08, the icon/pointer field at +0x0c, and the u16 app id at +0x10;
+/// it copies 0x3c bytes and later owns +0x00/+0x04 as registry links.
+/// Fields after +0x10 remain provisional until a real target-private SDK or a
+/// read-only device probe confirms their meaning.
 #[repr(C)]
 pub struct launcher_app_descriptor {
-    pub package_name: *mut c_void,
-    pub launcher_icon_resource: *mut c_void,
-    pub app_id: u16,
-    pub launcher_metadata_callback: *mut c_void,
+    pub registry_prev: *mut c_void, // +0x00, firmware-owned after install
+    pub registry_next: *mut c_void, // +0x04, firmware-owned after install
+    pub package_name: *mut c_void, // +0x08
+    pub launcher_icon_resource: *mut c_void, // +0x0c
+    pub app_id: u16, // +0x10
+    pub app_id_padding: u16,
+    pub launcher_metadata_callback: *mut c_void, // +0x14, role still provisional
+    pub field_18: *mut c_void, // +0x18, role still provisional
+    pub lifecycle_callback: *mut c_void, // +0x1c, callback-like in teardown
+    pub reserved: [u32; 7], // +0x20..+0x3b; copied by app_install
 }
 
 #[repr(C)]

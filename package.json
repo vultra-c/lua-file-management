@@ -1,15 +1,18 @@
 {
-  "name": "deepscan-watchface",
-  "version": "1.0.0",
+  "name": "vela-files-pair",
+  "version": "0.3.0",
   "private": true,
-  "description": "DEEP_SCAN — 小米手环 9 Pro Lua 表盘（原生深色系统 UI 文件管理器），含 .face 打包/解包/冒烟测试工具链",
+  "description": "小米手环 9 Pro Lua 文件管理表盘 + Vela Files 配套轻应用",
   "type": "module",
   "scripts": {
     "build:face": "bun scripts/build-face.mjs",
-    "verify:face": "bun scripts/unpack-face.mjs bin/DeepScan.face",
-    "unpack": "bun scripts/unpack-face.mjs",
+    "verify:face": "bun scripts/unpack-face.mjs bin/VelaFiles.face",
     "test:lua": "lua5.4 scripts/smoke-test.lua",
-    "gen:preview": "bun scripts/gen-preview.mjs"
+    "test:bridge": "lua5.4 scripts/bridge-smoke.lua",
+    "build:companion": "bun tools/build-companion.mjs",
+    "verify:companion": "bun tools/verify-companion.mjs",
+    "build:all": "bun scripts/build-face.mjs && bun tools/build-companion.mjs",
+    "verify:all": "bun scripts/unpack-face.mjs bin/VelaFiles.face && bun tools/verify-companion.mjs && lua5.4 scripts/smoke-test.lua && lua5.4 scripts/bridge-smoke.lua"
   },
   "engines": {
     "node": ">=18"

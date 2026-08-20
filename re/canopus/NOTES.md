@@ -2,18 +2,17 @@
 
 > 来源：<https://github.com/Searchstars/Canopus-Module-BluetoothAudio>
 > 分析时间：2026-08-14
-> 结论先行：**这个仓库基本把「表盘注入原生应用 → 出现在应用列表 → 系统原生 UI」整条链路的
-> 公开面全部写出来了，而且明确包含我们这台设备的 target（band-9-pro-3.1.175）。**
-> 剩下的不是「逆向」，而是「向 AstroBox 要 SDK 访问权」这一个动作。
+> 结论先行：**这个仓库公开了 Canopus 的工程形状、协议线索和部分 target 配置，但没有公开 9 Pro 可运行的 supervisor、完整私有 ABI、签名授权或真机验证载荷。**
+> 9 Pro AP 的后续静态分析已经补出一批函数候选；这些是研究线索，不是可安装的 9 Pro target pack。
 >
-> 后续更新：完整的 ABI/协议逆向还原稿见 [`SPEC.md`](./SPEC.md)；
-> 「整个逆向」为何不可达 + 官方快应用替代路线见 [`VERDICT.md`](./VERDICT.md)。
+> 后续更新：公开接口与固件证据的阶段性还原稿见 [`SPEC.md`](./SPEC.md)；
+> 「整个逆向」的边界与官方快应用替代路线见 [`VERDICT.md`](./VERDICT.md)。
 
 ---
 
-## 一、这个仓库给了我们什么（全部公开、可直接照抄）
+## 一、这个仓库给了我们什么（公开工程线索，非完整运行时）
 
-它就是一个完整的 Canopus 原生应用范例（蓝牙音频），除业务逻辑外，**文件管理器需要的东西它全都有**：
+它是一个 Canopus 原生应用范例（蓝牙音频），可以帮助我们理解模块目录、安装表盘、协议字段和 UI 业务结构；但其中依赖的 supervisor、target-private ABI、签名链和生产载荷不能据此视为已获得：
 
 ### 1. 设备端安装链（=「安装表盘」概念，与 DeepScan 现有表盘同构）
 
@@ -81,8 +80,7 @@ on_signal / on_create / on_resume / on_pause / on_destroy   // 页面生命周�
   lvx_event_add / lvx_event_get_code / lvx_event_get_user_data / lvx_timer_create`；
 - 导航：`activity_navigate(key,0,0,0)`、`activity_finish(page_descriptor)`。
 
-也就是说：**列表行、标签、页标题、返回、点击事件、定时刷新**这套“系统原生列表 UI”的调用
-方式全部公开。文件管理器只要把「蓝牙设备行」换成「文件/目录行」即可。
+也就是说：公开源码展示了**列表行、标签、页标题、返回、点击事件、定时刷新**的调用意图和 band-9 分支；但实际函数地址、参数 ABI、线程上下文以及 supervisor 仍需固件静态分析或设备只读验证。文件管理器的业务层可以参考蓝牙设备行，但不能直接把源码编译成可安装模块。
 
 ### 4. 模块 ABI（`target/module.rs` + `c_shim/canopus_ctor.c`）
 
@@ -104,8 +102,7 @@ RUST_TARGET_TRIPLE=thumbv8m.main-none-eabihf
 RUST_TARGET_CPU=cortex-m33
 ```
 
-与实机固件 **3.1.175** 完全对上。band-9 的 LVX 分支、行工厂差异都已单独处理，说明
-**AstroBox 已经为这台设备做好了 target pack**（含固件符号地址）。
+与实机固件 **3.1.175** 的 target profile 名称对上。band-9 的 LVX 分支和行工厂差异已经在公开源码中声明，但这只能证明源码保留了构建目标，不能证明 AstroBox 已发布可用的 9 Pro target pack、supervisor 或符号地址表。本轮 AP 静态扫描已独立恢复一批候选地址，但尚未完成 ABI/真机验证。
 
 ---
 
@@ -124,9 +121,9 @@ canopus-target-private  = { path = "../../../Canopus/sdk/rust/canopus-target-pri
 
 - `canopus-abi / canopus-runtime / canopus-ui-core`：**公开 ABI 类型/状态机/语义模型**（结构在
   本仓库源码里基本能反推出来）；
-- `canopus-target-private`：**每个固件的符号地址表**（`app_install`、`launcher_add`、
-  `lvx_*`、`nuttx_open`、`canopus_identity_guard` 等函数的真实地址 + `TARGET_ID`）。这是唯一
-  真正“按固件逆向”出来的部分，闭源。
+- `canopus-target-private`：源码引用的**每固件符号地址表和私有调用封装**（`app_install`、
+  `launcher_add`、`lvx_*`、`nuttx_open`、`canopus_identity_guard` 等）。公开仓库没有这部分内容；
+  本轮从 9 Pro 明文 AP 恢复了部分静态候选，但完整 ABI、supervisor 入口和身份校验仍未闭环。
 
 另有三个构建期产物也只在闭源 Canopus 仓库里（见 `scripts/build-install-watchface.sh`）：
 
@@ -181,5 +178,20 @@ targets/xiaomi-band-9-pro-3.1.175.env  # 直接复用
 - DeepScan 表盘（已交付）继续可用：Lua 文件浏览 + 删除，但只在表盘选择器里。
 - 第七轮「本机无 modlib、`insmod` 路线关闭」的结论**依然正确**，但与本路线无关——Canopus 走
   `/dev/canopus` 监督器，不依赖零售固件的 modlib。
-- 本仓库彻底消除了“要不要逆向 LVX / app_install / launcher_add”的不确定性：**API 名、结构体、
-  调用顺序、band-9 差异全部公开**，只差那一个闭源 target pack 里的**地址数字**。
+- 本仓库现在把公开源码线索与 9 Pro AP 静态证据分开记录：API 意图和 band-9 分支可参考，
+  但 descriptor 布局、页面回调、LVX 行 ABI、supervisor 加载通道和签名链仍不能视为已验证。
+
+---
+
+## 六、2026-08-20 静态证据修正
+
+9 Pro `3.1.175` OTA 外层 ZIP 中存在可解压的明文 `vela_ap.bin`（7,774,696 B，SHA-256
+`4f43b325addd6d9e6e7c7e2a4d00ffe3f23d5fb1560d8fe503544002ac1f516b`）。因此“地址表只能从加密 AP 获取”这一早期结论已收窄：可以继续从 AP 做只读静态分析。
+
+当前已恢复的候选包括 `app_install=0x2c44b5d0`、`app_lookup=0x2c449334`、
+`app_launcher_add=0x2c2a7cb8`、`lvx_page_title_create=0x2c2783c8`；同时确认
+`app_install` 连续复制 `0x3c` 字节，`app_id` 读取位置为 descriptor `+0x10`。
+
+但 10 Pro supervisor 样本明确负责注册 `/dev/canopus`、校验 CMI1/Ed25519 并调用 target-specific
+加载入口，而 9 Pro AP 静态镜像未出现这些 supervisor/modlib 标记。故以上地址只能作为后续
+静态研究输入，不能直接调用、写入 `.ko` 或生成可安装 9 Pro Canopus。

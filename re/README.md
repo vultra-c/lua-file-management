@@ -1,14 +1,17 @@
-# re/ — 原生 UI 逆向工作区
+# re/ — 原生 UI 逆向工作区（历史资料）
+
+> **Legacy notice:** 本目录保留上一轮 Canopus/固件静态逆向证据，不参与当前 Lua 后端表盘和 Vela Files 轻应用的构建，也不应据此执行未经验证的设备地址。
 
 目标：把「文件管理器」从 **lvgl 表盘** 升级为 **真正的系统原生应用 UI**（出现在应用列表、用系统原生控件渲染）。
 
 **当前状态**：
-- ✅ 固件容器已完整解析并**提取全部 9 个子镜像**——见 `re/firmware/NOTES.md` 与 `re/scripts/fwextract.mjs`。
-- ✅ 表盘侧注入链已按实机验证结果落地（`insmod → lsmod → exec`，见 `lua/main.lua`）。
-- ⛔ **已确认 `vela_ap.bin` 等 9 个子镜像全部加密**（高熵密文），且固件带 **RSA-2048 签名验证**（公钥已提取）。
-  仅凭固件 + 公钥**无法解密**（密钥 RSA 封装，需厂商私钥；或硬编码在 MCU 侧 Thumb 码内需 Ghidra 反汇编）。
-- ✅ 因此改走**运行时逆向**：直接读设备上已解密挂载的 `/data/apps.json`、`/system/image/launcher.res`、
-  `/usr/lib` 下的应用框架 `.so`（见下方 P1/P2 清单）。这是唯一可行路径。
+- ✅ 固件容器已解析；`fwextract.mjs` 提取的是 9 个 `ZZZ~` 高熵表项，外层 ZIP 另含一份可解压的明文 AP。
+- ✅ `re/scripts/apscan.mjs` 已从 9 Pro 3.1.175 AP 中定位 `app_install`、`app_lookup`、
+  `app_launcher_add`、`lvx_page_title_create` 的静态候选地址——见 `re/canopus/FIRMWARE_SYMBOLS.md`。
+- ✅ 表盘侧注入探针仍保留并已按实机结果记录；但本机 Lua shell 的 `insmod/lsmod/exec` 失败，
+  不能把朋友设备上的 modlib 闭环直接视为本机执行通道。
+- ⚠️ RSA-2048 仍约束固件升级包合法性；静态拿到函数地址不等于拥有 Canopus supervisor、
+  签名授权或可调用的模块 ABI。任何地址都必须先做只读真机探针。
 - ✅ 表盘已内置**一键采集**：顶栏 `i` → **`DUMP`**，把下方 P1/P2/P3 的大部分样本自动写到
   `/data/deepscan_re/`（见 `lua/main.lua` 的 `runREDump`）。装好表盘后按一下 `DUMP`，再用文件管理器
   进入 `/data/deepscan_re/` 把内容逐条发回来即可，无需手动敲 `ls`/`cat`。
@@ -87,6 +90,9 @@ re/
   scripts/analyze.mjs   # ELF 分析器：架构/依赖/导出符号/UI 相关字符串
   scripts/fwscan.mjs    # 固件扫描：`ZZ~ 头 + 压缩/分区签名 + 关键字符串定位
   scripts/fwdecomp.mjs  # 固件解压：gzip/zlib 流解压 + squashfs 超级块解析
+  scripts/zip-inspect.mjs # 外层 ZIP local entry / AP 提取
+  scripts/apscan.mjs      # AP Thumb-2 静态地址候选扫描
+  scripts/canopus-gap.mjs # 9 Pro AP 与 10 Pro supervisor 的执行通道差分
 ```
 
 ```bash
@@ -94,6 +100,9 @@ bun re/scripts/fwextract.mjs          # 解析 `ZZ~/`ZZZ~ 容器，提取 9 个�
 bun re/scripts/analyze.mjs            # 扫描 exec/system/firmware/libs 下的 ELF 并出报告
 bun re/scripts/fwscan.mjs             # 扫描固件头部/压缩签名/关键字符串
 bun re/scripts/fwdecomp.mjs           # 解压固件内 gzip/zlib 流 + squashfs 超块
+bun re/scripts/zip-inspect.mjs        # 列出外层 ZIP local entry，并可提取明文 AP
+bun re/scripts/apscan.mjs             # 输出 9 Pro app/LVX 静态候选地址
+bun re/scripts/canopus-gap.mjs         # 比较 9 Pro AP 与 supervisor 标记/缺失项
 ```
 
 分析器不修改任何输入文件，只读样本、写 `re/report/`。

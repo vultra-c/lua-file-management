@@ -317,21 +317,28 @@ pub fn apply_snapshot(page_index: usize, snapshot: &PageSnapshot) -> i32 {
         || backend.layout_hash != next_layout_hash
         || backend.layout_count != next_layout_count;
 
-    // 页标题        if backend.page_title.is_null() {
-            let back_callback = if snapshot.title_mode != 0 {
-                page_title_back as *const ()
-            } else {
-                core::ptr::null()
-            };
-            let back_context = (page_index << 8) as *mut core::ffi::c_void;
-            backend.page_title = unsafe {
-                lvx_page_title_create(backend.root, snapshot.title, snapshot.title_mode, back_callback, back_context)
-            };
-            if backend.page_title.is_null() {
-                return -1;
-            }
+    // 页标题
+    if backend.page_title.is_null() {
+        let back_callback = if snapshot.title_mode != 0 {
+            page_title_back as *const ()
+        } else {
+            core::ptr::null()
+        };
+        let back_context = (page_index << 8) as *mut core::ffi::c_void;
+        backend.page_title = unsafe {
+            lvx_page_title_create(
+                backend.root,
+                snapshot.title,
+                snapshot.title_mode,
+                back_callback,
+                back_context,
+            )
+        };
+        if backend.page_title.is_null() {
+            return -1;
         }
-        unsafe { lvx_set_hidden(backend.page_title, 0) };
+    }
+    unsafe { lvx_set_hidden(backend.page_title, 0) };
 
     let mut previous: *mut core::ffi::c_void = backend.page_title;
 

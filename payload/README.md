@@ -1,4 +1,6 @@
-# payload/ — 原生应用注入载荷
+# payload/ — 原生应用注入载荷（历史资料）
+
+> **Legacy notice:** 新方案不再构建或使用本目录的 modlib/ELF 注入载荷；部分旧构建脚本和生成模块已删除。当前项目是 Lua 后端表盘 + Vela Files 轻应用，见根目录 `README.md`。
 
 ## 构建原生模块（真实 ARM 交叉工具链）
 
@@ -217,10 +219,15 @@ modlib 要求数据段必须有真实内容」这一类拒绝。`DUMP` 面板也
 `RUST_TARGET_FEATURE=target-xiaomi-band-9-pro-3-1-175`），固件匹配这一硬门槛已通过。
 
 第七轮「原生注入路线关闭」的结论**只针对本机零售固件自带的 modlib 通道**
-（`insmod`/`lsmod`/`exec` 不存在）。AstroBox 团队的 **Canopus** 框架走的是另一条路：
-它往设备里装一个**自己的常驻监督器（supervisor）**（boot-resident、flash-persistent，
-由 AstroBox 工具安装，不依赖零售固件的 modlib），监督器提供 `/dev/canopus` 节点负责
-加载/校验/注册模块。因此本机 modlib 缺失**不阻塞 Canopus**。
+（`insmod`/`lsmod`/`exec` 不存在）。此前把 Canopus 描述成“必然有独立于 modlib 的
+安装通道”证据不足。对工作区抽出的 10 Pro supervisor 做静态复核后，已确认它本身是
+ET_REL 模块，公开安装表盘在支持的设备上通过 `insmod` 加载；它再注册 `/dev/canopus`
+并负责后续模块校验/装载。
+
+这不排除 AstroBox 私有工具可能为某些固件提供另一种安装机制，但当前没有 9 Pro
+`3.1.175` 的 supervisor、私有加载器或真机证据。因此本机缺少 modlib 仍是 Canopus
+路线的实际硬门槛，不能再声称“不会阻塞 Canopus”。详见 `re/scripts/canopus-gap.mjs`
+和 `re/canopus/FIRMWARE_SYMBOLS.md`。
 
 Canopus 完整链路（从 LyraPlayer 源码确认）：
 
@@ -233,7 +240,7 @@ Canopus 完整链路（从 LyraPlayer 源码确认）：
        → firmware_page_descriptor 的 on_create/on_resume 回调 + LVX 渲染原生 UI
 ```
 
-三个未满足的前置（均闭源，需 AstroBox 提供）：
+当前仍未满足的前置（均需官方/运行时证据）：
 
 1. **Canopus SDK**（闭源仓库 `github.com/AstralSightStudios/Canopus`，404）：
    targets 固件符号包 + verifier CLI + 签名私钥 `module-installer-ed25519.pem`。
@@ -241,6 +248,8 @@ Canopus 完整链路（从 LyraPlayer 源码确认）：
    （AstroBox-NG 私有模块，`abtools.py init --private`）。
 3. **签名授权**：模块必须过 `identity-guard`（CMI1 收据锁定固件 SHA-256 +
    模块 SHA-256 + target id，不能自签），需要可信私钥或官方代签。
+4. **9 Pro 执行通道**：需要确认 supervisor 如何在没有零售 `insmod` 的 9 Pro 上首次
+   进入执行区；目前不能用 10 Pro supervisor 代替。
 
 拿到上述三者后，即可按 LyraPlayer 的 `Canopus.toml` + Rust 模块 + 安装表盘流程，
 把文件管理器做成**签名的原生应用**进应用列表（原生 UI）。在此之前继续用已交付的
@@ -276,3 +285,23 @@ Canopus 完整链路（从 LyraPlayer 源码确认）：
 - `gnu-elf.ld` —— NuttX 10.3.0 官方模块链接脚本（`arm-none-eabi-ld -r -T`）。
 - `scripts/build-ko.sh` —— 真实工具链构建脚本（需 `gcc-arm-none-eabi`）。
 - `scripts/build-module.mjs` —— 旧版手工编码构建器（保留作无工具链环境兜底）。
+
+## 2026-08-20 固件静态逆向修正
+
+历史第六/七轮记录把“`ZZZ~` 表项里的高熵 `vela_ap.bin`”误写成了“整个 OTA 的 AP 都不可静态分析”。
+继续检查外层 ZIP local entry 后，已经找到一份可 raw-deflate 解压的明文 AP：
+
+- raw 大小 `7,774,696` B；SHA-256 `4f43b325addd6d9e6e7c7e2a4d00ffe3f23d5fb1560d8fe503544002ac1f516b`；
+- 运行时基址 `0x2c080000`；
+- 已恢复 `app_install=0x2c44b5d0`、`app_lookup=0x2c449334`、
+  `app_launcher_add=0x2c2a7cb8`、`lvx_page_title_create=0x2c2783c8` 候选。
+
+可复现命令：
+
+```bash
+bun re/scripts/apscan.mjs re/firmware/upd_miwear.watch.n67cn.bin
+```
+
+这只解决 target-private 地址的静态研究，不改变当前设备 `insmod/lsmod/exec` 探针失败、
+也不提供 Canopus supervisor 或签名授权。地址必须先做只读真机验证，不能直接写入模块使用。
+详见 `re/canopus/FIRMWARE_SYMBOLS.md`。

@@ -1,6 +1,10 @@
 //! Native app registration：固定 app id、launcher 条目、两个页面描述符
 //! （列表 + 详情）以及页面生命周期回调。
 //!
+//! 注意：9 Pro AP 的 `app_install` 静态证据表明 descriptor 的 app_id 位于
+//! +0x10，不能沿用旧的四字段/+0x08 草图；实际字段定义仍需 target-private
+//! SDK 或只读探针确认，见 `re/canopus/FIRMWARE_SYMBOLS.md`。
+//!
 //! 结构与 `bluetooth-audio-device/src/target/native_app.rs` 一致：
 //! app/page 注册与 Launcher 发布分两次调用（stage 1 / stage 2），
 //! 让 miwear 先处理 app-registry 事件再持久化 Launcher 条目。
@@ -20,7 +24,7 @@ pub const PAGE_DETAIL: usize = 1;
 pub const PACKAGE_NAME: &[u8] = b"com.canopus.filemanager\0";
 pub const DISPLAY_NAME: &[u8] = b"Files\0";
 // 图标由安装表盘在 install 前 stage 到 /data/canopus/appicon_filemanager.bin
-// （117×117 ARGB4444，与蓝牙示例的 appicon_headphones.bin 同格式同流程）。
+// （117×117 ARGB8888，与蓝牙示例的 appicon_headphones.bin 同格式同流程）。
 pub const LAUNCHER_ICON: &[u8] = b"/data/canopus/appicon_filemanager.bin\0";
 const PAGE_NAME_LIST: &[u8] = b"files\0";
 const PAGE_NAME_DETAIL: &[u8] = b"file_detail\0";
@@ -63,6 +67,9 @@ fn c_str_equal(a: *const u8, expected: &[u8]) -> bool {
 }
 
 fn app_descriptor_init() {
+    // `launcher_app_descriptor` 的前 0x20 字节按 9 Pro AP 的静态布局组织：
+    // +0/+4 是安装后由固件接管的 registry links，+8/+c 是指针字段，
+    // +0x10 是 u16 app_id；后续字段的语义仍是 provisional。
     // SAFETY: APP_DESCRIPTOR 是模块私有 static，在 `app_install` 发布前恰好初始化一次。
     unsafe {
         core::ptr::write_bytes(

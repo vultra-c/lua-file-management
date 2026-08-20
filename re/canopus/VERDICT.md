@@ -1,25 +1,24 @@
 # Canopus「整个逆向出来」的最终判定
 
-> 日期：2026-08-14
-> 结论先行：**Canopus 的接口面我已 100% 还原（见 `SPEC.md`），但“整个”逆向无法在
-> 本工作区完成——卡住它的不是工作量，而是三样只存在于 AstroBox 私有仓库里的东西。**
-> 同时，调查中发现了一条**官方、开源、且你朋友团队已经跑通**的正路（Vela 快应用），
-> 强烈建议改走这条路。
+> 原始记录日期：2026-08-14；静态逆向更新：2026-08-20
+> 当前判定：**公开源码、协议线索和 9 Pro AP 的部分静态入口已经恢复，但完整 Canopus 运行时仍未闭环。**
+> 早期“接口面 100% 完成、地址只能从加密 AP 获取”的表述已被本轮证据收窄：现在可以继续静态分析明文 AP，
+> 但 supervisor、真实私有 ABI、签名授权和首次加载通道仍是独立硬门槛。
 
 ---
 
 ## 一、“逆向 Canopus”到底在逆什么
 
-拆开看只有四块，其中三块已经公开：
+拆开看仍然是四块，但完成度不同：
 
-| 块 | 内容 | 状态 |
+| 块 | 内容 | 当前状态 |
 | --- | --- | --- |
-| A. 模块 ABI | `ModuleDescriptorV1`、`CMR1` 注册、生命周期、flags | ✅ 已还原（SPEC.md §1） |
-| B. 应用列表注册 | `app_install / app_lookup / launcher_add`、两个结构体、两阶段发布 | ✅ 已还原（SPEC.md §2） |
-| C. 原生 UI | 全部 `lvx_*` 调用 + band-9 分支差异 | ✅ 已还原（SPEC.md §3） |
-| D. 安装协议 | CMI1 收据 + CPC2 INSTALL + CPC1 错误查询，逐字节格式 | ✅ 已还原（SPEC.md §4） |
+| A. 模块 ABI | `ModuleDescriptorV1`、CMR1 注册、生命周期、flags | 公开源码线索已整理；真实 SDK/加载器 ABI 未验证 |
+| B. 应用列表注册 | `app_install / app_lookup / launcher_add`、descriptor、两阶段发布 | 9 Pro AP 已有静态候选；descriptor 完整布局和调用 ABI 未闭环 |
+| C. 原生 UI | LVX 调用和 band-9 分支 | 公开源码 + AP 静态候选；行控件、事件、导航 ABI 未闭环 |
+| D. 安装协议 | CMI1 收据、CPC2 INSTALL、CPC1 错误查询 | 10 Pro 样本行为已分析；9 Pro supervisor/签名通道缺失 |
 
-所以“接口/协议层”的逆向已经完成，并落盘成 `SPEC.md`。
+因此 `SPEC.md` 是**公开接口和当前证据的阶段性还原稿**，不是可直接生成 9 Pro 载荷的完整 SDK。
 
 ---
 
@@ -28,10 +27,10 @@
 1. **`canopus-target-private`：每个固件的符号地址表**
    `app_install / launcher_add / app_lookup / lvx_* / nuttx_open / canopus_identity_guard`
    这些函数在 `vela_ap.bin` 里的真实地址。**这是唯一真正“按固件逆向”出来的部分**，
-   而且就锁在 `upd_miwear.watch.n67cn.bin` 里被 RSA 加密的 `vela_ap.bin` 中。
-   - 已确认：9 个子镜像全为高熵密文，固件带 RSA-2048 签名，密钥 RSA 封装（只有厂商私钥能解）
-     或硬编码在 MCU 侧 Thumb 码里（需 Ghidra 级反汇编，工作量是“周”不是“轮”）。
-   - 结论：**仅凭仓库里这份固件，无法在合理时间内拿到符号地址。**
+   而早期提取路径看到的 9 个 `ZZZ~` 子镜像是高熵载荷；但 2026-08-20 已从同一 OTA 外层 ZIP
+   找到可解压的明文 `vela_ap.bin`，因此符号地址可以通过只读静态分析逐步恢复。
+   - 当前已得到 `app_install`、`app_lookup`、`app_launcher_add`、`lvx_page_title_create` 等候选地址；
+   - 这些候选仍缺参数、线程上下文和 supervisor 配套，不能直接当作 target-private SDK 使用。
 
 2. **Ed25519 签名私钥 + `canopus` ELF 校验器**
    CMI1 收据要签名、模块要过校验器，这两样只在闭源 Canopus 仓库里。没有它们，
@@ -41,8 +40,7 @@
    `/dev/canopus` 由常驻监督器提供；先得用 `canopus-installer` 表盘 LOAD+INSTALL 一次，
    `/dev/canopus` 才存在。监督器二进制、安装表盘、刷入步骤都在闭源仓库。
 
-**一句话：Canopus 不在固件里，它是 AstroBox 的私有运行时。能逆的都逆完了，剩下的
-（地址表、私钥、监督器）不是“逆向对象”，是“要授权才能拿到的东西”。**
+**一句话：Canopus 不在固件里，它是 AstroBox 的私有运行时。9 Pro AP 的静态地址和部分调用关系还可以继续逆向；但私钥、9 Pro supervisor、首次加载通道以及完整运行时 ABI 不是仅凭当前仓库就能证明或获得的东西。**
 
 ---
 
@@ -131,3 +129,25 @@ dist/com.astralsightstudios.vela.astralime.debug.1.0.0.rpk   # 产物
 三样缺的东西里，只有“符号地址表”理论上能靠自己逆向固件补（周级 Ghidra 工程，且卡 OTA 解密或需 SWD 硬件 dump）；**私钥 + 监督器是别人闭源运行时，任何公开渠道都拿不到，也不是“逆向”能产出的对象**。因此方案 B 的硬依赖就是 AstroBox 的访问权，无法绕过。
 
 （另有一条公开正路可作为备选：atc1441 的 BES2700iMP 开源固件 SDK——但那是“刷自制固件”级别，风险与工程量更高，不属本次目标。）
+
+## 八、2026-08-20 静态逆向修正
+
+此前“地址表锁在加密 `vela_ap.bin` 中、仅凭固件无法静态得到”的结论需要收窄：
+`fwextract.mjs` 取到的 `ZZZ~` 表项仍是高熵载荷，但同一个 OTA 外层 ZIP local entry
+还含有一份可解压的明文 AP。通过 `re/scripts/apscan.mjs`，已经得到 9 Pro 3.1.175
+的第一批静态候选：
+
+- `app_install = 0x2c44b5d0`；
+- `app_lookup = 0x2c449334`；
+- `app_launcher_add = 0x2c2a7cb8`；
+- `lvx_page_title_create = 0x2c2783c8`。
+
+这意味着“自己逆向出 target-private 地址”从理论障碍变成了可继续推进的静态分析工程。
+但原判定中的另外两项仍成立：
+
+1. 当前仓库没有 9 Pro 可安装的 Canopus supervisor/`/dev/canopus` 提供者；
+2. 当前仓库没有 AstroBox 模块签名授权和完整模块 ABI/线程上下文验证。
+
+因此这些地址不能直接塞进 `canopus-filemanager` 生成 `.ko`，更不能直接在手环上调用。
+下一步应先补齐 LVX 其余函数和 descriptor 布局，再以只读探针验证；拿到 supervisor
+或官方代签后，才进入文件管理器模块的真机测试。

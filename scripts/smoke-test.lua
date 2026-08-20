@@ -1,112 +1,107 @@
 -- scripts/smoke-test.lua
--- DEEP_SCAN 文件管理器表盘冒烟测试：桌面 Lua 5.4 + 打桩 lvgl/fs
--- 驱动真实 lua/main.lua（简洁版文件管理器）主流程：
---   初始列表 / 目录导航 / 删除文件 / 无 fs 降级
--- 用法：lua5.4 scripts/smoke-test.lua
--- 返回非 0 表示失败。
+-- DEEP_SCAN Files：桌面 Lua 5.4 + 打桩 LVGL/文件系统冒烟测试。
 
 local ROOT = "./"
-
 local failures = 0
-local function check(cond, msg)
-  if cond then
-    print("  ok  - " .. msg)
+
+local function check(condition, message)
+  if condition then
+    print("  PASS " .. message)
   else
-    print("  FAIL- " .. msg)
+    print("  FAIL " .. message)
     failures = failures + 1
   end
 end
 
--- ============ 打桩环境 ============
-local registry = {}
-
 local function makeEnv(withFs)
-  registry = {}
-
-  local lvgl = {}
-  lvgl.HOR_RES = function() return 336 end
-  lvgl.VER_RES = function() return 480 end
-  lvgl.FLAG = { SCROLLABLE = 16, CLICKABLE = 2, EVENT_BUBBLE = 16384, HIDDEN = 1 }
-  lvgl.ALIGN = { CENTER = 9, TOP_MID = 2, TOP_RIGHT = 3 }
-  lvgl.EVENT = { CLICKED = 7, SHORT_CLICKED = 4 }
-  lvgl.BUILTIN_FONT = {
-    DEFAULT = { name = "default" }, MONTSERRAT_14 = { name = "m14" },
-    MONTSERRAT_16 = { name = "m16" }, MONTSERRAT_18 = { name = "m18" },
-    MONTSERRAT_24 = { name = "m24" }, MONTSERRAT_32 = { name = "m32" },
+  local registry = {}
+  local lvgl = {
+    HOR_RES = function() return 336 end,
+    VER_RES = function() return 480 end,
+    FLAG = { SCROLLABLE = 16, CLICKABLE = 2, EVENT_BUBBLE = 16384, HIDDEN = 1 },
+    ALIGN = { CENTER = 9 },
+    EVENT = { SHORT_CLICKED = 4 },
+    BUILTIN_FONT = {
+      DEFAULT = {}, MONTSERRAT_12 = {}, MONTSERRAT_13 = {},
+      MONTSERRAT_14 = {}, MONTSERRAT_16 = {}, MONTSERRAT_18 = {},
+      MONTSERRAT_24 = {}, MONTSERRAT_32 = {},
+    },
   }
 
-  local function newObj(parent, props)
-    local o = {
+  local tree = {
+    ["/"] = { data = "d", tmp = "d", etc = "d" },
+    ["/data"] = { app = "d", ["notes.txt"] = "f", ["report.txt"] = "f" },
+    ["/data/app"] = { ["config.json"] = "f" },
+    ["/tmp"] = { ["deepscan_smoke.bin"] = "f" },
+    ["/etc"] = {},
+  }
+
+  local function newObject(parent, props)
+    local object = {
       _parent = parent, _props = props or {}, _children = {},
-      _flags = {}, _handlers = {}, _deleted = false,
-      _text = (props and props.text) or "",
+      _handlers = {}, _deleted = false,
+      _text = props and props.text or "",
     }
-    function o:set(p)
-      for k, v in pairs(p or {}) do
-        self._props[k] = v
-        if k == "text" then self._text = v end
+    function object:set(values)
+      for key, value in pairs(values or {}) do
+        self._props[key] = value
+        if key == "text" then self._text = value end
       end
     end
-    function o:add_flag(f) self._flags[f] = true end
-    function o:clear_flag(f) self._flags[f] = nil end
-    function o:onevent(code, cb) self._handlers[code] = cb; return self end
-    function o:delete()
+    function object:add_flag() end
+    function object:clear_flag() end
+    function object:onevent(code, callback) self._handlers[code] = callback end
+    function object:delete()
       if self._deleted then return end
       self._deleted = true
-      for _, c in ipairs(self._children) do c:delete() end
-      for i = #registry, 1, -1 do
-        if registry[i] == self then table.remove(registry, i); break end
-      end
+      for _, child in ipairs(self._children) do child:delete() end
     end
-    function o:is_visible() return not self._props.hidden end
-    if parent and parent._children then table.insert(parent._children, o) end
-    table.insert(registry, o)
-    return o
+    if parent and parent._children then parent._children[#parent._children + 1] = object end
+    registry[#registry + 1] = object
+    return object
   end
 
-  lvgl.Object = function(parent, props) return newObj(parent, props) end
-  lvgl.Label = function(parent, props) return newObj(parent, props) end
+  lvgl.Object = function(parent, props) return newObject(parent, props) end
+  lvgl.Label = function(parent, props) return newObject(parent, props) end
 
   if withFs then
-    local tree = {
-      ["/"] = { data = "d", tmp = "d", etc = "d", many = "d" },
-      ["/data"] = { app = "d", ["notes.txt"] = "f", ["report.txt"] = "f" },
-      ["/data/app"] = { ["config.json"] = "f" },
-      ["/tmp"] = { ["deepscan_smoke.bin"] = "f" },
-      ["/etc"] = {},
-      ["/many"] = {},
-    }
-    for i = 1, 12 do
-      tree["/many"][string.format("file%02d.txt", i)] = "f"
-    end
     lvgl.fs = {}
-    function lvgl.fs.open_dir(p)
-      local t = tree[p]
-      if not t then return nil end
-      local keys = {}
-      for k in pairs(t) do keys[#keys + 1] = k end
-      table.sort(keys)
-      local i = 0
-      return { read = function() i = i + 1; return keys[i] end, close = function() return true end }
+    function lvgl.fs.open_dir(path)
+      local entries = tree[path]
+      if not entries then return nil end
+      local names = {}
+      for name in pairs(entries) do names[#names + 1] = name end
+      table.sort(names)
+      local index = 0
+      return {
+        read = function()
+          index = index + 1
+          return names[index]
+        end,
+        close = function() return true end,
+      }
     end
-    function lvgl.fs.open_file(p, mode)
-      local isFile = false
-      for dir, ents in pairs(tree) do
-        for name in pairs(ents) do
-          local fp = dir == "/" and ("/" .. name) or (dir .. "/" .. name)
-          if fp == p then isFile = true end
+    function lvgl.fs.open_file(path, mode)
+      local known = false
+      for directory, entries in pairs(tree) do
+        for name in pairs(entries) do
+          local full = directory == "/" and ("/" .. name) or (directory .. "/" .. name)
+          if full == path then known = true end
         end
       end
-      if not isFile and mode ~= "w" then return nil end
+      if not known and mode ~= "w" then return nil end
       return {
-        read = function(_, n)
-          local c = "fake-content"
-          if n == "*a" then return c end
-          if type(n) == "number" then return string.sub(c, 1, n) end
-          return c
+        read = function(_, amount)
+          local content = "fake-content"
+          if amount == "*a" then return content end
+          if type(amount) == "number" then return content:sub(1, amount) end
+          return content
         end,
-        seek = function(_, whence) if whence == "end" then return 1234 end return 0 end,
-        write = function(_, d) return #d end,
+        seek = function(_, offset, whence)
+          if whence == "end" or offset == "end" then return 1234 end
+          return 0
+        end,
+        write = function(_, value) return #value end,
         close = function() return true end,
       }
     end
@@ -115,231 +110,108 @@ local function makeEnv(withFs)
   end
 
   package.loaded.lvgl = lvgl
+  FileManagerBackend = nil
+  SCRIPT_PATH = ROOT .. "lua/"
 
   local function findLabel(text)
-    for _, o in ipairs(registry) do
-      if not o._deleted and o._text == text then return o end
+    for _, object in ipairs(registry) do
+      if not object._deleted and object._text == text then return object end
     end
     return nil
   end
 
-  local function findLabelContains(text)
-    for _, o in ipairs(registry) do
-      if not o._deleted and o._text:find(text, 1, true) then return o end
+  local function findContains(text)
+    for _, object in ipairs(registry) do
+      if not object._deleted and object._text:find(text, 1, true) then return object end
+    end
+    return nil
+  end
+
+  local function tap(button)
+    if button and button._handlers[lvgl.EVENT.SHORT_CLICKED] then
+      button._handlers[lvgl.EVENT.SHORT_CLICKED](button)
+      return true
+    end
+    return false
+  end
+
+  local function buttonFor(text)
+    local label = findLabel(text)
+    return label and label._parent or nil
+  end
+
+  local function deleteButtonFor(rowButton)
+    if not rowButton then return nil end
+    for _, object in ipairs(registry) do
+      if not object._deleted and object._parent == rowButton then
+        for _, child in ipairs(object._children or {}) do
+          if child._text == "Delete" then return object end
+        end
+      end
     end
     return nil
   end
 
   return {
-    lvgl = lvgl,
-    registry = registry,
     findLabel = findLabel,
-    findLabelContains = findLabelContains,
-    -- 触发某对象的 SHORT_CLICKED 回调（按钮）
-    tapBtn = function(btn)
-      if btn and btn._handlers[lvgl.EVENT.SHORT_CLICKED] then
-        btn._handlers[lvgl.EVENT.SHORT_CLICKED](btn)
-        return true
-      end
-      return false
-    end,
-    -- 找到某名称标签所属的（可点击）按钮
-    nameBtnOf = function(labelText)
-      local lbl = findLabel(labelText)
-      if not lbl then return nil end
-      return lbl._parent
-    end,
-    -- 找到某行右侧的 DEL 按钮：与名称按钮同 y 的 DEL 按钮
-    delBtnFor = function(nameBtn)
-      if not nameBtn then return nil end
-      for _, o in ipairs(registry) do
-        if not o._deleted and o._parent == nameBtn and o._children then
-          for _, c in ipairs(o._children) do
-            if not c._deleted and c._text == "Delete" then return o end
-          end
-        end
-      end
-      return nil
-    end,
+    findContains = findContains,
+    buttonFor = buttonFor,
+    deleteButtonFor = deleteButtonFor,
+    tap = tap,
   }
 end
 
--- ============ 阶段 0：入口加载 + 初始列表 ============
-print("== Phase 0: entry load + initial list ==")
+print("== Phase 0: load + list ==")
 local env = makeEnv(true)
-local okMain, mainMod = pcall(dofile, ROOT .. "lua/main.lua")
-check(okMain, "main.lua loads without error")
-check(mainMod == nil, "top-level entry (Monika convention, no ui module)")
-check(type(ScreenStateChangedCB) == "function", "ScreenStateChangedCB exported")
-check(env.findLabel("/data") ~= nil, "initial path label shows /data")
-check(env.findLabel("app/") ~= nil, "lists folder app/")
-check(env.findLabel("notes.txt") ~= nil, "lists file notes.txt")
-check(env.findLabel("report.txt") ~= nil, "lists file report.txt")
+local ok = pcall(dofile, ROOT .. "lua/main.lua")
+check(ok, "main.lua loads")
+check(type(ScreenStateChangedCB) == "function", "screen lifecycle callback exported")
+check(type(pageOnPause) == "function", "pageOnPause exported")
+check(type(pageOnResume) == "function", "pageOnResume exported")
+check(env.findLabel("/data") ~= nil, "starts at /data")
+check(env.findLabel("app/") ~= nil, "lists directory")
+check(env.findLabel("notes.txt") ~= nil, "lists file")
 
--- ============ 阶段 A：目录导航 ============
-print("== Phase A: navigate ==")
-local appBtn = env.nameBtnOf("app/")
-check(appBtn ~= nil, "found app/ name button")
-check(env.tapBtn(appBtn), "tap app/ navigates")
-check(env.findLabel("/data/app") ~= nil, "path label shows /data/app")
-check(env.findLabel("config.json") ~= nil, "lists config.json")
+print("== Phase A: navigation ==")
+check(env.tap(env.buttonFor("app/")), "enters app directory")
+check(env.findLabel("/data/app") ~= nil, "path changes")
+check(env.findLabel("config.json") ~= nil, "lists nested file")
+check(env.tap(env.buttonFor("<")), "returns to parent")
+check(env.findLabel("/data") ~= nil, "parent path restored")
 
-local upBtn = env.nameBtnOf("<")
-check(upBtn ~= nil, "found header back button")
-check(env.tapBtn(upBtn), "tap back")
-check(env.findLabel("/data") ~= nil, "back to /data")
+print("== Phase B: delete ==")
+local smokePath = "/tmp/deepscan_smoke.bin"
+local realFile = io.open(smokePath, "wb")
+realFile:write("hello smoke")
+realFile:close()
+check(io.open(smokePath, "r") ~= nil, "real smoke file created")
+check(env.tap(env.buttonFor("<")), "returns to root")
+check(env.tap(env.buttonFor("tmp/")), "enters tmp")
+local fileButton = env.buttonFor("deepscan_smoke.bin")
+local deleteButton = env.deleteButtonFor(fileButton)
+check(deleteButton ~= nil, "delete action exists")
+check(env.tap(deleteButton), "delete confirmation opens")
+check(env.findLabel("Delete this item?") ~= nil, "confirmation title shown")
+check(env.tap(env.buttonFor("DELETE")), "delete confirmed")
+local remains = io.open(smokePath, "r")
+check(remains == nil, "file removed")
+if remains then remains:close() end
 
--- ============ 阶段 B：删除文件 ============
-print("== Phase B: delete file ==")
--- 创建真实文件用于删除验证
-local realFile = "/tmp/deepscan_smoke.bin"
-local rf = io.open(realFile, "wb")
-rf:write("hello smoke")
-rf:close()
-check(io.open(realFile, "r") ~= nil, "real smoke file created")
-
--- 从 /data 上到 /，进入 /tmp
-check(env.tapBtn(env.nameBtnOf("<")), "back to /")
-check(env.findLabel("tmp/") ~= nil, "root lists tmp/")
-check(env.tapBtn(env.nameBtnOf("tmp/")), "enter /tmp")
-check(env.findLabel("deepscan_smoke.bin") ~= nil, "/tmp lists smoke file")
-
--- 点 DEL → 弹窗 → DELETE
-local fileBtn = env.nameBtnOf("deepscan_smoke.bin")
-local delBtn = env.delBtnFor(fileBtn)
-check(delBtn ~= nil, "found DEL button for smoke file")
-check(env.tapBtn(delBtn), "tap DEL opens confirm dialog")
-check(env.findLabel("Delete this item?") ~= nil, "confirm dialog shows")
-
-local deleteBtn = env.nameBtnOf("DELETE")
-check(deleteBtn ~= nil, "found DELETE confirm button")
-check(env.tapBtn(deleteBtn), "tap DELETE")
-local stillThere = io.open(realFile, "r")
-check(stillThere == nil, "os.remove deleted the real file")
-if stillThere then stillThere:close() end
-
--- ============ 阶段 C：无 fs 降级 ============
-print("== Phase C: degrade without lvgl.fs ==")
+print("== Phase C: missing filesystem API ==")
 env = makeEnv(false)
-local ok2 = pcall(dofile, ROOT .. "lua/main.lua")
-check(ok2, "main.lua loads without lvgl.fs")
-check(env.findLabelContains("cannot open") ~= nil, "graceful 'cannot open' without fs api")
+local degraded = pcall(dofile, ROOT .. "lua/main.lua")
+check(degraded, "loads without lvgl.fs")
+check(env.findContains("cannot open") ~= nil, "shows graceful error")
 
--- ============ 阶段 D：能力面板 + 注入实验 ============
-print("== Phase D: capability panel + inject experiment ==")
+print("== Phase D: backend info ==")
 env = makeEnv(true)
-local ok3 = pcall(dofile, ROOT .. "lua/main.lua")
-check(ok3, "main.lua re-loads")
-check(env.tapBtn(env.nameBtnOf("i")), "tap i opens capability panel")
-check(env.findLabel("SYSTEM CAPABILITIES") ~= nil, "capability panel shows")
-local injBtn = env.nameBtnOf("INJECT")
-check(injBtn ~= nil, "found INJECT button")
-check(env.tapBtn(injBtn), "tap INJECT runs pipeline")
-check(env.findLabel("NATIVE INJECT") ~= nil, "inject result panel shows (no payload)")
+local reloaded = pcall(dofile, ROOT .. "lua/main.lua")
+check(reloaded, "reloads cleanly")
+check(env.tap(env.buttonFor("i")), "info panel opens")
+check(env.findLabel("FILES BACKEND") ~= nil, "backend information shown")
 
--- ============ 阶段 E：注入链路（insmod → lsmod 解析基址 → exec）============
--- 打桩 os.execute / io.popen 模拟实机验证过的调用链，验证解析逻辑正确。
-print("== Phase E: injection chain (write -> insmod -> lsmod -> exec) ==")
-env = makeEnv(true)
-
-PAYLOAD = "fake .ko bytes"
-local realExecute = os.execute
-local realPopen = io.popen
-os.execute = function(cmd)
-  if cmd:find("insmod", 1, true) then
-    return true, "exit", 0
-  elseif cmd:find("exec ", 1, true) then
-    return true, "exit", 0
-  end
-  return true, "exit", 0
+if failures > 0 then
+  print(string.format("\n%d checks failed", failures))
+  os.exit(1)
 end
-io.popen = function(cmd, mode)
-  if cmd:find("lsmod", 1, true) then
-    return {
-      read = function(_, n)
-        return "NAME INIT UNINIT ARG NEXPORTS TEXT SIZE DATA SIZE\n" ..
-               "deepscan 0 0 0 0x3D3B1D90 1000 500\n"
-      end,
-      close = function() return true end,
-    }
-  elseif cmd:find("mw ", 1, true) then
-    return { read = function() return "0x5EED0001" end, close = function() return true end }
-  end
-  return nil
-end
-
-local ok4 = pcall(dofile, ROOT .. "lua/main.lua")
-check(ok4, "main.lua loads with embedded payload + stubbed shell")
-check(env.tapBtn(env.nameBtnOf("i")), "tap i opens capability panel")
-check(env.tapBtn(env.nameBtnOf("INJECT")), "tap INJECT runs full chain")
-check(env.findLabel("NATIVE INJECT") ~= nil, "inject result panel shows")
-check(env.findLabelContains("base 0x3D3B1D90") ~= nil, "lsmod parsed module base 0x3D3B1D90")
-check(env.findLabelContains("exit 0") ~= nil, "insmod/exec returned clean exit 0")
-
-os.execute = realExecute
-io.popen = realPopen
-PAYLOAD = nil
-
--- ============ 阶段 F：RE DUMP（目录树 + 文件拷贝 + shell 捕获）============
--- 打桩 io.open 捕获写入，验证 tree_root/tree_data 目录树生成 + 结果面板。
-print("== Phase F: RE dump (tree walk + copy + shell capture) ==")
-env = makeEnv(true)
-local written = {}
-local realIOOpen = io.open
-io.open = function(path, mode)
-  if mode == "wb" or mode == "w" then
-    return {
-      write = function(_, d) written[path] = d; return #d end,
-      close = function() return true end,
-    }
-  end
-  return nil
-end
--- writeFile 现在优先 lvgl.fs.open_file("w")，捕获写入以验证产物
-local realFsOpenFile = env.lvgl.fs.open_file
-env.lvgl.fs.open_file = function(path, mode)
-  if mode == "w" then
-    return {
-      write = function(_, d) written[path] = d; return #d end,
-      close = function() return true end,
-    }
-  end
-  return realFsOpenFile(path, mode)
-end
-os.execute = function() return true, "exit", 0 end
-io.popen = function() return nil end
-
-local ok5 = pcall(dofile, ROOT .. "lua/main.lua")
-check(ok5, "main.lua loads for RE dump")
-check(env.tapBtn(env.nameBtnOf("i")), "tap i opens capability panel")
-check(env.tapBtn(env.nameBtnOf("DUMP")), "tap DUMP runs RE dump")
-check(env.findLabelContains("RE DUMP") ~= nil, "dump result panel shows")
-
-local dump = written["/data/deepscan_dump.txt"]
-check(dump and dump:find("tmp/", 1, true) ~= nil, "deepscan_dump.txt lists tmp/")
-check(dump and dump:find("app/", 1, true) ~= nil, "deepscan_dump.txt lists app/")
-
-io.open = realIOOpen
-os.execute = realExecute
-io.popen = realPopen
-
--- ============ 阶段 G：分页统计与列表严格一致 ============
-print("== Phase G: pagination total matches footer ==")
-env = makeEnv(true)
-local ok6 = pcall(dofile, ROOT .. "lua/main.lua")
-check(ok6, "main.lua loads for pagination check")
-check(env.tapBtn(env.nameBtnOf("<")), "back to /")
-check(env.findLabel("many/") ~= nil, "root lists many/")
-check(env.tapBtn(env.nameBtnOf("many/")), "enter /many")
-check(env.findLabelContains("12 items (12 files") ~= nil, "footer shows 12 items (12 files)")
-check(env.findLabel("1/2") ~= nil, "page label 1/2")
-check(env.findLabel("file01.txt") ~= nil, "page 1 lists file01.txt")
-check(env.findLabel("file07.txt") == nil, "page 1 hides file07.txt")
-check(env.tapBtn(env.nameBtnOf(">")), "tap next page")
-check(env.findLabel("2/2") ~= nil, "page label 2/2")
-check(env.findLabel("file07.txt") ~= nil, "page 2 lists file07.txt")
-check(env.findLabelContains("12 items (12 files") ~= nil, "footer still 12 items (total)")
-
--- ============ 汇总 ============
-print(string.format("== result: %d failure(s) ==", failures))
-os.exit(failures == 0 and 0 or 1)
+print("\nAll smoke checks passed")

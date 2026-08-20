@@ -55,11 +55,12 @@
   - `/system/i18n/<lang>/`、`/system/image/ota/`
 - **压缩**：固件含 zlib inflate 错误串；OTA 日志用 `gzip -f -1`。
 
-## ⛔ 决定性发现：子镜像全部加密 + RSA 签名
+## ⛔ 旧提取路径的发现：ZZZ~ 子镜像为高熵载荷 + RSA 签名
 
-- 9 个子镜像（含 `vela_ap.bin`）数据区**均为高熵密文**：无 ELF 魔数（`7f 45 4c 46` 计数 0）、
-  无 gzip/zlib/squashfs 头，无法直接解析。launcher/app 注册与原生 UI 框架都封装在**加密的
-  `vela_ap.bin`** 内。
+- 通过 `fwextract.mjs` 解析出的 9 个 `ZZZ~` 表项（含其中的 `vela_ap.bin`）数据区是高熵载荷：
+  无 ELF 魔数（`7f 45 4c 46` 计数 0）、无 gzip/zlib/squashfs 头，不能直接把这组表项当作
+  AP 可执行镜像。这个观察**不等于 OTA 中不存在另一份明文 AP**；2026-08-20 已发现外层
+  ZIP local entry 里的 `vela_ap.bin`，见下方修正。
 - MCU 侧明文区（0x81000 起）内嵌 **RSA-2048 公钥**，用于**固件签名验证**：
   - 模数：`92DC37B58549DADE9D2E633FFCA36FE955E317A12B291E970675ED09459017F9F833B6E37E34642361B66E4FF7463674D685C1DA5ED6FA8C3B14DB5F5DAB60B9FD765A233FD6ACC1D5ADAA59DB1631ADAF5D`
   - 指数：`10001`（65537）
@@ -67,17 +68,33 @@
 - 加密栈为 **OpenSSL**（对象库字符串：`des-ede3-cbc`、`rsaEncryption`、`sha-1/sha256/sha512WithRSAEncryption`、
   `RSASSA-PSS`）；并带 **minizip**（`extract crypted file using password`）。
 
-### 结论：固件解密是死路
+### 旧结论（已被 2026-08-20 的 ZIP 解析修正）
 
-子镜像的解密密钥要么以 RSA 混合加密方式封装（只有厂商私钥能解），要么硬编码在 MCU 侧 Thumb 码内
-（需 Ghidra 级反汇编才能确认）。**仅凭仓库内的固件 + RSA 公钥无法在可接受时间内解密 `vela_ap.bin`。**
+只凭 `ZZZ~` 表项和 RSA 公钥，确实不能解开那组高熵 OTA 载荷；但把这个结论推广到整个
+OTA 文件是错误的。外层 ZIP 还包含一份可直接 raw-deflate 解压的明文 `vela_ap.bin`，
+因此现在可以离线反汇编 AP 并恢复静态函数候选。RSA 签名仍然约束刷写/升级包的合法性，
+但不阻止对这份明文 AP 做只读研究。
 
-因此「出现在应用列表 + 系统原生 UI」不应再走「解固件」路线，而应走**运行时逆向**：设备正在运行的
-`vela_ap` 已解密并挂载在系统里，直接读设备上的 `/data/apps.json`、`/system/image/launcher.res`、
-`/usr/lib` 下的应用框架 `.so` 即可拿到明文符号与注册表（见 `re/README.md` 的 P1/P2 清单）。
+容器解析入口仍是 `fwextract.mjs`；外层 ZIP/AP 入口是 `zip-inspect.mjs` 和
+`apscan.mjs`。后者已经定位到 `app_install`、`app_lookup`、`app_launcher_add`、
+`lvx_page_title_create` 的 9 Pro 运行时候选地址，详见 `re/canopus/FIRMWARE_SYMBOLS.md`。
 
-> 本仓库已把容器解析/提取（`fwextract.mjs`）、ELF 分析（`analyze.mjs`）、固件扫描（`fwscan.mjs`）、
-> 解压（`fwdecomp.mjs`）全部备好；加密墙是唯一且不可绕过的障碍。
+> 这解决的是“能否静态恢复 target-private 地址”的问题，不解决 supervisor、签名授权、
+> 模块加载入口和真机 ABI 验证问题。
+
+## 2026-08-20 修正：外层 ZIP 中的明文 AP
+
+`bun re/scripts/apscan.mjs re/firmware/upd_miwear.watch.n67cn.bin` 的可复现结果：
+
+- ZIP local entry `vela_ap.bin`：偏移 `0x94af8`，压缩 `4,816,380` B，解压 `7,774,696` B；
+- 解压后 SHA-256：`4f43b325addd6d9e6e7c7e2a4d00ffe3f23d5fb1560d8fe503544002ac1f516b`；
+- AP 运行时基址：`0x2c080000`（由 `FLASH_BASE=0x2C000000`、`OTA_CODE_OFFSET=0x80000`
+  和绝对字符串指针交叉确认）；
+- 明文包含 `NuttShell (NSH) NuttX-10.3.0`、LVGL/LVX 源路径、launcher 和 app manager 代码。
+
+第一批静态候选：`app_install=0x2c44b5d0`、`app_lookup=0x2c449334`、
+`app_launcher_add=0x2c2a7cb8`、`lvx_page_title_create=0x2c2783c8`（调用时使用 Thumb 位
+`+1`）。这些地址尚未在手环上执行验证，不能直接用于刷写或模块调用。
 
 ## 追加发现：MCU 侧明文区提取的「应用列表 / 文件系统地图」
 

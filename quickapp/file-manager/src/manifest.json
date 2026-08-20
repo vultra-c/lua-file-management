@@ -1,0 +1,30 @@
+{
+  "package": "com.deepscan.velafiles",
+  "name": "Vela Files",
+  "versionName": "0.3.0",
+  "versionCode": 3,
+  "minAPILevel": 1,
+  "icon": "/common/icon.png",
+  "deviceTypeList": ["watch"],
+  "features": [
+    { "name": "system.app" },
+    { "name": "system.file" },
+    { "name": "system.prompt" },
+    { "name": "system.vibrator" }
+  ],
+  "config": {
+    "logLevel": "error",
+    "designWidth": 336
+  },
+  "router": {
+    "entry": "pages/files",
+    "pages": {
+      "pages/files": {
+        "component": "files"
+      }
+    }
+  },
+  "display": {
+    "backgroundColor": "#000000"
+  }
+}

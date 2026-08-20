@@ -1,0 +1,25 @@
+{
+  "package": "com.deepscan.velafiles",
+  "file": "com.deepscan.velafiles.debug.0.3.0.rpk",
+  "bytes": 5768,
+  "sha256": "25d401a9cbba9a07f4c2558d71436dbfca84674f0290ca5dbcc6aa96a5026126",
+  "entries": [
+    {
+      "name": "manifest.json",
+      "bytes": 590
+    },
+    {
+      "name": "app.ux",
+      "bytes": 72
+    },
+    {
+      "name": "pages/files/files.ux",
+      "bytes": 16998
+    },
+    {
+      "name": "common/icon.png",
+      "bytes": 1120
+    }
+  ],
+  "note": "ZIP-compatible development RPK; rebuild/sign with official AIoT-IDE for device installation."
+}

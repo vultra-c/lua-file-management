@@ -1,8 +1,8 @@
-# Canopus ABI / 协议完整规格（逆向还原稿）
+# Canopus ABI / 协议阶段性规格（逆向还原稿）
 
-> 来源：`Searchstars/Canopus-Module-BluetoothAudio` 公开源码（逐文件核对）。
-> 状态：这是 **Canopus 公开接口面的完整逆向还原**。闭源部分见 `VERDICT.md`。
-> 日期：2026-08-14
+> 来源：`Searchstars/Canopus-Module-BluetoothAudio` 公开源码（逐文件核对）及 9 Pro `3.1.175` AP 静态分析。
+> 状态：这是 **公开接口线索与当前固件证据的阶段性还原稿**；带 `candidate/provisional` 标记的布局和函数均未完成真机 ABI 验证。闭源部分与执行边界见 `VERDICT.md`。
+> 日期：原始记录 2026-08-14；静态更新 2026-08-20
 
 Canopus 不是固件里的东西。它是一套 **第三方常驻监督器（supervisor）+ 签名原生模块（ELF）** 体系：
 模块用 Rust 写、编译成 `thumbv8m.main-none-eabihf` 的 ARM ELF，由表盘一次性“安装表盘”
@@ -102,28 +102,46 @@ i32         launcher_add(u16 app_id);    // 把条目写进 Launcher
 ### `launcher_app_descriptor`
 
 ```c
-struct launcher_app_descriptor {
-    void* package_name;               // 如 "com.canopus.headphones\0"
-    void* launcher_icon_resource;     // 如 "/resource/app/launcher/flashlight.bin\0"（复用系统图标）
-    u16   app_id;                     // 固定 id（示例 0x00CB）
-    void* launcher_metadata_callback; // fn() -> *const u8，返回显示名 "Headphones\0"
+/* provisional 9 Pro 3.1.175 layout; not a complete public ABI */
+struct launcher_app_descriptor_9p_candidate {
+    void* registry_prev;              // +0x00, firmware-owned after install
+    void* registry_next;              // +0x04, firmware-owned after install
+    void* package_or_name;            // +0x08, required by app_install
+    void* icon_or_pointer;            // +0x0c
+    u16   app_id;                     // +0x10
+    u16   reserved_12;
+    void* field_14;                   // pointer/callback role unconfirmed
+    void* field_18;                   // pointer/callback role unconfirmed
+    void* field_1c;                   // callback-like during teardown
+    u32   reserved_20_to_3b[7];
 };
 ```
+
+> **9 Pro 静态修正（2026-08-20）**：`vela_ap.bin` 的 `app_install` 候选
+> `0x2c44b5d0` 在入口读取 descriptor `+0x08`，再用 `LDRH descriptor+0x10`
+> 查重；随后复制 `0x3c` 字节，并把已安装对象的 `+0x00/+0x04` 改成链表链接。
+> 因此此前基于公开示意图的“`app_id` 在 `+0x08`”不能用于这台 9 Pro。
+> `+0x14/+0x18/+0x1c` 的具体语义、页面 descriptor 的真实布局和调用 ABI仍未确认。
 
 ### `firmware_page_descriptor`
 
 ```c
-struct firmware_page_descriptor {
-    void* page_name;      // "headphones\0"
-    u16   page_id;
-    u16   app_id;
-    void* on_signal;      // fn(page, event:u32, payload:void*) -> i32
-    void* on_create;      // fn(page, root:void*, start_data:void*) -> i32
-    void* on_resume;      // fn(page) -> i32
-    void* on_pause;       // fn(page) -> i32
-    void* on_destroy;     // fn(page) -> i32
+/* public-source sketch only; offsets are not verified for 9 Pro */
+struct firmware_page_descriptor_candidate {
+    void* field_00;
+    u16   field_04;
+    u16   field_06;
+    void* field_08;
+    void* field_0c;
+    void* field_10;
+    void* field_14;
+    void* field_18;
 };
 ```
+
+> 页面 descriptor 目前只保留为公开源码的候选模型。`app_install` 确实接收
+> `r1=page-pointer array`、`r2=page_count`，但页面回调字段的真实偏移/参数尚未由
+> 9 Pro AP 或只读设备探针闭环确认；不能据此直接发布模块。
 
 ### 两阶段发布（避免 re-enter）
 

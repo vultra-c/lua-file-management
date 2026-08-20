@@ -1,10 +1,10 @@
 # Canopus — 官方发布物逆向分析（Searchstars 两仓库）
 
-> 日期：2026-08-18
+> 日期：2026-08-19
 > 来源：
 > - `Searchstars/Canopus-Manager-AstroBox-Release`（发布包）
 > - `Searchstars/Canopus-Module-BluetoothAudio`（模块 + 构建链源码）
-> 产物已下载到 `payload/canopus-manager/`，supervisor 模块已从 .bin 中抽出并分析。
+> 当前工作区的 `payload/canopus-manager/` 是此前抓取的 **v65536** 快照，supervisor 模块已从该快照中抽出并分析；本轮提供的 **v65537** 元数据记录在文末，避免混淆两个版本。
 
 ---
 
@@ -16,7 +16,7 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| `canopus-installer-prod-10p-036+030.bin` | 编译好的管理器表盘（217,791 B） |
+| `canopus-installer-prod-10p-036+030.bin` | 工作区保存的旧版 **v65536** 管理器表盘（217,791 B） |
 | `manifest_v2.json` | 清单：`restype: "canopus"`、`id: canopus_manager`、下载键 `xmb10p` |
 | `icon.png` / `cover.png` | 表盘图标/封面 |
 
@@ -35,7 +35,7 @@
 
 ## 二、从 .bin 里抽出的 supervisor —— 整个 Canopus 系统就是两个 .ko
 
-把 `canopus-installer-prod-10p-036+030.bin` 反解，里面有：
+把工作区保存的旧版 `canopus-installer-prod-10p-036+030.bin` 反解，里面有：
 
 ```
 _lua/canopus-installer-prod/main.lua
@@ -109,9 +109,59 @@ local inserted = run(string.format("insmod %s %s", shell_quote(MODULE_PATH), MOD
 
 ```
 payload/canopus-manager/
-  canopus-installer-prod-10p-036+030.bin   # 官方管理器表盘成品（217,791 B）
-  manifest_v2.json                         # 清单（restype: canopus, xmb10p）
+  canopus-installer-prod-10p-036+030.bin   # 工作区保存的 v65536 管理器表盘（217,791 B）
+  manifest_v2.json                         # v65536 清单（restype: canopus, xmb10p）
   icon.png / cover.png
   sup-3.101.030.ko                         # 抽出：supervisor 模块（ET_REL ARM, 72,863 B）
   sup-3.101.036.ko                         # 抽出：supervisor 模块（ET_REL ARM, 127,556 B）
 ```
+
+---
+
+## 六、2026-08-19 用户提供资源复核
+
+### Manager `v65537`
+
+- URL：<https://github.com/Searchstars/Canopus-Manager-AstroBox-Release/raw/refs/heads/main/canopus-installer-prod-10p-036%2B030.v65537.bin>
+- GitHub blob：`cc5cf214ca041fc665020180c450aa9c8ef5e068`（这是 Git blob SHA-1，不是 SHA-256）。
+- 大小：**219,423 B**；manifest `version=1.0.1`、`versionCode=65537`。
+- 下载键仍为 `xmb10p`，清单警告仍明确只支持 **3.101.036**；该包不是 9 Pro `3.1.175` 的 Manager。
+- 新版包未覆盖工作区的旧二进制；工作区旧包和其抽取物保持不变，避免二进制与本地 manifest 错配。
+
+### BluetoothAudio 官方资源
+
+- 资源仓库：<https://github.com/Searchstars/astrobox-resource-canopus_bluetoothaudio>
+- manifest 下载项只有：`xmb10p → downloads/bta-module-installer-prod-10p-036+030.v65536.bin`。
+- GitHub blob：`dde96985ec97a4f35fbeff98aee7a6095ae42ce0`，大小 **408,816 B**；资源版本为 `1.0.0`。
+- `Canopus-Module-BluetoothAudio` 源码虽然声明了 `xiaomi-band-9-pro-3.1.175.env`，但生产 installer 的 Lua 只选择 10 Pro `3.101.030/036`，`FIRMWARE_PARITY.md` 的设备验证也只针对 10 Pro。
+
+### 对文件管理器工程的影响
+
+1. 这三份资源可以作为 **CPC2/CMI1 投递流程、原生 app 注册和 LVX band-9 分支的公开参考**；
+2. 它们没有提供可直接安装到 9 Pro `3.1.175` 的 supervisor、签名收据或已验证文件管理器模块；
+3. 因此 `canopus-filemanager/` 仍是 9 Pro 实验性源码/构建框架，不能声称已经产出可安装的 9 Pro 原生应用；
+4. 下一步应向 AstroBox 团队索取 9 Pro supervisor/target-private 支持，或让其对 `file_manager` 载荷进行官方代签。
+
+## 九、2026-08-20 supervisor 差分复核
+
+工作区抽出的 `sup-3.101.036.ko` 不是普通的描述文件，而是带完整局部符号的 ET_REL
+supervisor。静态反汇编确认其常规启动链包含：
+
+```
+installer watchface -> insmod supervisor.ko
+supervisor -> register_driver("/dev/canopus", fops)
+module request -> receipt/target/hash/Ed25519 verification
+             -> target-specific absolute module-loader entry
+```
+
+同一 supervisor 样本内明确写入 `xiaomi-band-10-pro-3.101.036`，并包含
+`identity_guard`、`sup_load_module`、`sup_verify_package_at`、`/dev/canopus` 等符号/字符串。
+反之，`re/scripts/canopus-gap.mjs` 对 9 Pro 明文 AP 的结果为：
+
+- `/dev/canopus`、`canopus`、`supervisor`、`insmod`、`lsmod`、`modlib`：均为 0 次；
+- `app_install`、`app_launcher_add`、`lvx_page_title_create`：存在；
+- NuttX `vfs/fs_open.c`、`fs_read.c`、`fs_close.c`：存在。
+
+这把问题拆成两层：9 Pro 固件的原生 UI/文件 API 可以继续逆向，但仍缺一个经过 9 Pro
+验证的 supervisor 首次加载通道和 target record。故不能把“10 Pro supervisor 改名”
+作为方案，也不能把静态候选地址直接执行。

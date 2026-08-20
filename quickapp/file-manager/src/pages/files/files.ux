@@ -1,0 +1,629 @@
+<template>
+  <div class="page">
+    <div class="header">
+      <text class="title">Vela Files</text>
+      <text class="path">{{currentPath}}</text>
+    </div>
+
+    <div class="toolbar">
+      <text class="tool" onclick="goUp">UP</text>
+      <text class="tool" onclick="openSandbox">APP</text>
+      <text class="tool primary" onclick="openSystem">SYSTEM</text>
+      <text class="tool" onclick="refresh">REFRESH</text>
+    </div>
+
+    <scroll class="list" scroll-y="true">
+      <div class="row" for="item in items">
+        <text class="kind">{{item.kind}}</text>
+        <div class="entry" onclick="openItem(item)">
+          <text class="name">{{item.name}}</text>
+          <text class="meta">{{item.meta}}</text>
+        </div>
+        <text class="delete" onclick="deleteItem(item)">DEL</text>
+      </div>
+    </scroll>
+
+    <div class="footer">
+      <text class="status">{{status}}</text>
+      <text class="hint">{{mode}}</text>
+    </div>
+  </div>
+</template>
+
+<script>
+import app from '@system.app'
+import file from '@system.file'
+import prompt from '@system.prompt'
+import vibrator from '@system.vibrator'
+
+const FILE_ROOT = 'internal://files/'
+const BRIDGE_ROOT = 'internal://files/.velafiles-bridge/'
+const BRIDGE_REQUEST = BRIDGE_ROOT + 'request.txt'
+const BRIDGE_RESPONSE = BRIDGE_ROOT + 'response.txt'
+const SYSTEM_ROOT = '/data'
+const MAX_ENTRIES = 64
+const BRIDGE_VERSION = 1
+
+function canUse(apiName) {
+  try {
+    return !app || typeof app.canIUse !== 'function' || app.canIUse(apiName)
+  } catch (error) {
+    console.debug('canIUse failed', apiName)
+    return false
+  }
+}
+
+function trimSlash(uri) {
+  const value = String(uri || '')
+  return value.length > 1 ? value.replace(/\/+$/, '') : value
+}
+
+function entryName(uri) {
+  const value = trimSlash(uri)
+  const slash = value.lastIndexOf('/')
+  const raw = slash >= 0 ? value.slice(slash + 1) : value
+  try {
+    return decodeURIComponent(raw) || '(root)'
+  } catch (error) {
+    return raw || '(unnamed)'
+  }
+}
+
+function asDirectoryUri(uri) {
+  const value = String(uri || FILE_ROOT)
+  return value.endsWith('/') ? value : value + '/'
+}
+
+function parentUri(uri) {
+  const value = trimSlash(uri)
+  if (value === trimSlash(FILE_ROOT)) return FILE_ROOT
+  const slash = value.lastIndexOf('/')
+  const rootEnd = trimSlash(FILE_ROOT).length
+  if (slash < rootEnd) return FILE_ROOT
+  return value.slice(0, slash + 1)
+}
+
+function isSafeSystemPath(path) {
+  const value = String(path || '')
+  if (value !== SYSTEM_ROOT && !value.startsWith(SYSTEM_ROOT + '/')) return false
+  if (value.indexOf('\0') >= 0) return false
+  return !value.split('/').some((part) => part === '.' || part === '..')
+}
+
+function decodeBridgeValue(value) {
+  try {
+    return decodeURIComponent(String(value || ''))
+  } catch (error) {
+    return String(value || '')
+  }
+}
+
+function parseBridgeResponse(text) {
+  const response = { fields: {}, items: [] }
+  String(text || '').split(/\r?\n/).forEach((line) => {
+    if (!line) return
+    if (line.startsWith('item=')) {
+      const fields = line.slice(5).split('|')
+      response.items.push({
+        directory: fields[0] === 'D',
+        name: decodeBridgeValue(fields[1]),
+        size: fields[2] ? Number(fields[2]) : null
+      })
+      return
+    }
+    const separator = line.indexOf('=')
+    if (separator < 0) return
+    response.fields[line.slice(0, separator)] = decodeBridgeValue(line.slice(separator + 1))
+  })
+  return response
+}
+
+function systemChildPath(parent, name) {
+  const base = trimSlash(parent || SYSTEM_ROOT)
+  return base === SYSTEM_ROOT ? base + '/' + name : base + '/' + name
+}
+
+function systemParentPath(path) {
+  const value = trimSlash(path || SYSTEM_ROOT)
+  if (value === SYSTEM_ROOT) return SYSTEM_ROOT
+  const slash = value.lastIndexOf('/')
+  return slash <= SYSTEM_ROOT.length ? SYSTEM_ROOT : value.slice(0, slash)
+}
+
+export default {
+  public: {
+    currentPath: FILE_ROOT,
+    items: [],
+    status: 'Checking file permission…',
+    mode: 'QuickApp private files'
+  },
+
+  onInit() {
+    this.bridgeReady = false
+    this.bridgeTimer = null
+    this.pendingRequest = null
+    this.requestSequence = 0
+    this.ensureBridge()
+    this.refresh()
+    if (typeof setInterval === 'function') {
+      this.bridgeTimer = setInterval(() => this.pollBridge(), 900)
+    }
+  },
+
+  onDestroy() {
+    if (this.bridgeTimer !== null && typeof clearInterval === 'function') clearInterval(this.bridgeTimer)
+    this.bridgeTimer = null
+    this.pendingRequest = null
+    this.items.splice(0, this.items.length)
+  },
+
+  makeItem(entry, type) {
+    const info = entry || {}
+    const directory = type === 'dir'
+    const uri = directory ? asDirectoryUri(info.uri) : String(info.uri || '')
+    const length = info.length === undefined || info.length === null ? null : Number(info.length)
+    return {
+      name: entryName(uri),
+      uri: uri,
+      directory: directory,
+      kind: directory ? 'DIR' : 'FILE',
+      meta: directory ? 'folder' : (Number.isFinite(length) ? String(length) + ' B' : 'file')
+    }
+  },
+
+  loadEntryTypes(data) {
+    const source = data && Array.isArray(data.fileList) ? data.fileList : []
+    const items = []
+    const limit = Math.min(source.length, MAX_ENTRIES)
+    const visit = (index) => {
+      if (index >= limit) {
+        items.sort((left, right) => {
+          if (left.directory !== right.directory) return left.directory ? -1 : 1
+          return left.name.localeCompare(right.name)
+        })
+        this.items = items
+        this.status = source.length > limit
+          ? String(items.length) + '+ items (limited)'
+          : String(items.length) + ' item(s)'
+        this.mode = 'QuickApp private files'
+        return
+      }
+
+      const entry = source[index]
+      if (!entry || !entry.uri || String(entry.uri).startsWith(BRIDGE_ROOT)) {
+        visit(index + 1)
+        return
+      }
+
+      const fallback = () => {
+        items.push(this.makeItem(entry, 'file'))
+        visit(index + 1)
+      }
+
+      if (!canUse('@system.file.get') || !file || typeof file.get !== 'function') {
+        fallback()
+        return
+      }
+
+      file.get({
+        uri: entry.uri,
+        success: (info) => {
+          items.push(this.makeItem(Object.assign({}, entry, info || {}), info && info.type))
+          visit(index + 1)
+        },
+        fail: () => fallback()
+      })
+    }
+    visit(0)
+  },
+
+  ensureBridge() {
+    if (!file || typeof file.writeText !== 'function' || typeof file.readText !== 'function') {
+      this.status = 'Bridge file API unavailable'
+      this.mode = 'Open the Files watchface for /data'
+      return
+    }
+    if (!canUse('@system.file.mkdir')) {
+      this.status = 'Bridge directory API unavailable'
+      this.mode = 'Open the Files watchface for /data'
+      return
+    }
+
+    const ready = () => {
+      this.bridgeReady = true
+      if (this.pendingRequest) this.writeBridgeRequest()
+    }
+    const failed = () => {
+      if (typeof file.access !== 'function' || !canUse('@system.file.access')) {
+        this.status = 'Cannot prepare Lua bridge directory'
+        this.mode = 'Open the Files watchface for /data'
+        return
+      }
+      file.access({
+        uri: BRIDGE_ROOT,
+        success: ready,
+        fail: () => {
+          this.status = 'Cannot prepare Lua bridge directory'
+          this.mode = 'Open the Files watchface for /data'
+        }
+      })
+    }
+
+    file.mkdir({
+      uri: BRIDGE_ROOT,
+      recursive: true,
+      success: ready,
+      fail: failed
+    })
+  },
+
+  refresh() {
+    if (this.mode === 'Lua backend via Files watchface') {
+      this.requestSystem('LIST', this.currentPath)
+      return
+    }
+    if (!file || typeof file.list !== 'function' || !canUse('@system.file.list')) {
+      this.items = []
+      this.status = 'system.file.list unavailable'
+      this.mode = 'Open the Files watchface for /data'
+      return
+    }
+
+    this.status = 'Reading ' + this.currentPath + '…'
+    file.list({
+      uri: this.currentPath,
+      success: (data) => this.loadEntryTypes(data),
+      fail: (error, code) => {
+        this.items = []
+        this.status = 'Cannot access QuickApp files (' + String(code || 'sandbox') + ')'
+        this.mode = 'Open the Files watchface for /data'
+        console.debug('system.file.list failed', error, code)
+      }
+    })
+  },
+
+  openSandbox() {
+    this.mode = 'QuickApp private files'
+    this.currentPath = FILE_ROOT
+    this.pendingRequest = null
+    this.items = []
+    this.refresh()
+  },
+
+  openSystem() {
+    if (!isSafeSystemPath(SYSTEM_ROOT)) return
+    this.mode = 'Lua backend via Files watchface'
+    this.currentPath = SYSTEM_ROOT
+    this.items = []
+    this.requestSystem('LIST', SYSTEM_ROOT)
+  },
+
+  goUp() {
+    if (this.mode === 'Lua backend via Files watchface') {
+      const next = systemParentPath(this.currentPath)
+      if (next === this.currentPath) return
+      this.requestSystem('LIST', next)
+      return
+    }
+    const next = parentUri(this.currentPath)
+    if (next === this.currentPath) return
+    this.currentPath = next
+    this.refresh()
+  },
+
+  openItem(item) {
+    if (!item) return
+    if (this.mode === 'Lua backend via Files watchface') {
+      if (!isSafeSystemPath(item.uri)) {
+        this.status = 'Unsafe system path rejected'
+        return
+      }
+      if (item.directory) {
+        this.requestSystem('LIST', item.uri)
+      } else {
+        this.requestSystem('READ', item.uri)
+      }
+      return
+    }
+
+    if (item.directory) {
+      this.currentPath = item.uri
+      this.refresh()
+      return
+    }
+
+    if (!file || typeof file.readText !== 'function' || !canUse('@system.file.readText')) {
+      prompt.showToast({ message: 'Text preview unavailable' })
+      return
+    }
+
+    file.readText({
+      uri: item.uri,
+      success: (data) => {
+        const text = data && data.text ? data.text : ''
+        prompt.showDialog({
+          title: item.name,
+          message: String(text).slice(0, 220) || '(empty or binary file)'
+        })
+      },
+      fail: () => prompt.showToast({ message: 'Cannot read ' + item.name })
+    })
+  },
+
+  deleteItem(item) {
+    if (!item) return
+    if (this.mode === 'Lua backend via Files watchface') {
+      if (!isSafeSystemPath(item.uri)) {
+        this.status = 'Unsafe system path rejected'
+        return
+      }
+      prompt.showDialog({
+        title: 'Delete system file?',
+        message: item.name,
+        buttons: [
+          { text: 'CANCEL' },
+          { text: 'DELETE', action: () => this.requestSystem('DELETE', item.uri) }
+        ]
+      })
+      return
+    }
+
+    const method = item.directory ? 'rmdir' : 'delete'
+    const apiName = '@system.file.' + method
+    if (!file || typeof file[method] !== 'function' || !canUse(apiName)) {
+      prompt.showToast({ message: 'Delete API unavailable' })
+      return
+    }
+
+    prompt.showDialog({
+      title: item.directory ? 'Remove empty folder?' : 'Delete file?',
+      message: item.name,
+      buttons: [
+        { text: 'CANCEL' },
+        { text: 'DELETE', action: () => {
+          const options = {
+            uri: item.uri,
+            success: () => {
+              try {
+                if (vibrator && typeof vibrator.vibrate === 'function') vibrator.vibrate({ mode: 'short' })
+              } catch (error) {
+                console.debug('vibrator unavailable')
+              }
+              this.refresh()
+            },
+            fail: () => prompt.showToast({ message: item.directory ? 'Folder not empty' : 'Delete failed' })
+          }
+          if (item.directory) options.recursive = false
+          file[method](options)
+        }}
+      ]
+    })
+  },
+
+  requestSystem(op, path) {
+    if (!isSafeSystemPath(path)) {
+      this.status = 'Unsafe system path rejected'
+      return
+    }
+    if (!file || typeof file.writeText !== 'function' || !canUse('@system.file.writeText')) {
+      this.status = 'Lua bridge write API unavailable'
+      this.mode = 'Open the Files watchface for /data'
+      return
+    }
+
+    this.requestSequence += 1
+    const id = String(Date.now()) + '-' + String(this.requestSequence)
+    this.currentPath = op === 'LIST' ? path : this.currentPath
+    this.pendingRequest = { id: id, op: op, path: path }
+    this.status = 'Queued ' + op + '; open Files watchface once'
+    this.mode = 'Lua backend via Files watchface'
+    if (this.bridgeReady) this.writeBridgeRequest()
+  },
+
+  writeBridgeRequest() {
+    const request = this.pendingRequest
+    if (!request || !this.bridgeReady) return
+    const body = [
+      'version=' + String(BRIDGE_VERSION),
+      'id=' + encodeURIComponent(request.id),
+      'op=' + request.op,
+      'path=' + encodeURIComponent(request.path),
+      'ready=1'
+    ].join('\n') + '\n'
+
+    file.writeText({
+      uri: BRIDGE_REQUEST,
+      text: body,
+      encoding: 'UTF-8',
+      append: false,
+      success: () => {
+        this.status = 'Request ready; open Files watchface to process'
+      },
+      fail: (error, code) => {
+        this.status = 'Bridge request failed (' + String(code || 'write') + ')'
+        console.debug('bridge request failed', error, code)
+      }
+    })
+  },
+
+  pollBridge() {
+    if (!this.pendingRequest || !this.bridgeReady || !file || typeof file.readText !== 'function') return
+    if (!canUse('@system.file.readText')) return
+    file.readText({
+      uri: BRIDGE_RESPONSE,
+      encoding: 'UTF-8',
+      success: (data) => this.consumeBridgeResponse(data && data.text ? data.text : ''),
+      fail: () => {}
+    })
+  },
+
+  consumeBridgeResponse(text) {
+    if (!text) return
+    const response = parseBridgeResponse(text)
+    const pending = this.pendingRequest
+    if (!pending || response.fields.id !== pending.id) return
+    this.pendingRequest = null
+
+    if (response.fields.status !== 'ok') {
+      this.items = []
+      this.status = 'Lua bridge error: ' + String(response.fields.error || 'operation failed')
+      this.mode = 'Lua backend via Files watchface'
+      return
+    }
+
+    if (pending.op === 'LIST') {
+      const base = response.fields.path || pending.path
+      this.currentPath = base
+      this.items = response.items.map((entry) => ({
+        name: entry.name,
+        uri: systemChildPath(base, entry.name),
+        directory: entry.directory,
+        kind: entry.directory ? 'DIR' : 'FILE',
+        meta: entry.directory ? 'folder' : (Number.isFinite(entry.size) ? String(entry.size) + ' B' : 'file')
+      }))
+      this.status = String(this.items.length) + ' system item(s)'
+      this.mode = 'Lua backend via Files watchface'
+      return
+    }
+
+    if (pending.op === 'READ') {
+      const body = response.fields.text || '(empty or binary file)'
+      prompt.showDialog({
+        title: entryName(pending.path),
+        message: body.slice(0, 220)
+      })
+      this.status = 'Read complete; Lua backend'
+      this.mode = 'Lua backend via Files watchface'
+      return
+    }
+
+    if (pending.op === 'DELETE') {
+      this.status = 'Delete complete; refreshing system files'
+      this.currentPath = systemParentPath(pending.path)
+      this.requestSystem('LIST', this.currentPath)
+    }
+  },
+
+  syncWatchface() {
+    this.openSystem()
+  }
+}
+</script>
+
+<style>
+.page {
+  width: 336px;
+  height: 480px;
+  background-color: #000000;
+  flex-direction: column;
+}
+.header {
+  width: 336px;
+  height: 62px;
+  padding-left: 16px;
+  padding-right: 16px;
+  flex-direction: column;
+  justify-content: center;
+}
+.title {
+  color: #ffffff;
+  font-size: 22px;
+  height: 28px;
+}
+.path {
+  color: #8e8e93;
+  font-size: 13px;
+  height: 20px;
+}
+.toolbar {
+  width: 336px;
+  height: 42px;
+  padding-left: 12px;
+  padding-right: 12px;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+}
+.tool {
+  width: 72px;
+  height: 32px;
+  color: #8e8e93;
+  background-color: #1c1c1e;
+  border-radius: 14px;
+  font-size: 11px;
+  text-align: center;
+  padding-top: 8px;
+}
+.primary {
+  color: #0a84ff;
+}
+.list {
+  width: 336px;
+  height: 326px;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.row {
+  width: 312px;
+  height: 52px;
+  flex-direction: row;
+  align-items: center;
+  border-bottom-width: 1px;
+  border-bottom-color: #1c1c1e;
+}
+.kind {
+  width: 40px;
+  color: #0a84ff;
+  font-size: 12px;
+  text-align: center;
+}
+.entry {
+  width: 194px;
+  height: 44px;
+  flex-direction: column;
+  justify-content: center;
+}
+.name {
+  width: 194px;
+  color: #ffffff;
+  font-size: 16px;
+  text-overflow: ellipsis;
+}
+.meta {
+  width: 194px;
+  color: #8e8e93;
+  font-size: 12px;
+}
+.delete {
+  width: 58px;
+  height: 30px;
+  color: #ff453a;
+  background-color: #2a1114;
+  border-radius: 14px;
+  text-align: center;
+  padding-top: 7px;
+  font-size: 12px;
+}
+.footer {
+  width: 336px;
+  height: 50px;
+  padding-left: 16px;
+  padding-right: 16px;
+  flex-direction: column;
+  justify-content: center;
+}
+.status {
+  width: 304px;
+  height: 20px;
+  color: #ffffff;
+  font-size: 13px;
+  text-overflow: ellipsis;
+}
+.hint {
+  width: 304px;
+  height: 18px;
+  color: #8e8e93;
+  font-size: 11px;
+  text-overflow: ellipsis;
+}
+</style>

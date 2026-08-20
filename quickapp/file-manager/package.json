@@ -1,0 +1,10 @@
+{
+  "name": "vela-files-companion",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Xiaomi Vela watch companion QuickApp with a Lua /data bridge",
+  "scripts": {
+    "build": "bunx --bun aiot-toolkit@2.0.5 build",
+    "release": "bunx --bun aiot-toolkit@2.0.5 release"
+  }
+}
