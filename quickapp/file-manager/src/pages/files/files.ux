@@ -144,7 +144,9 @@ export default {
     this.pendingRequest = null
     this.requestSequence = 0
     this.ensureBridge()
-    this.refresh()
+    // The QuickApp process may be killed while the user switches to the
+    // watchface; rebuild the pending state from the persisted request file.
+    this.restoreBridgeState()
     if (typeof setInterval === 'function') {
       this.bridgeTimer = setInterval(() => this.pollBridge(), 900)
     }
@@ -182,15 +184,15 @@ export default {
           return left.name.localeCompare(right.name)
         })
         this.items = items
-        this.status = source.length > limit
-          ? String(items.length) + '+ items (limited)'
-          : String(items.length) + ' item(s)'
+        this.status = items.length > 0
+          ? (source.length > limit ? String(items.length) + '+ items (limited)' : String(items.length) + ' item(s)')
+          : '0 item(s) — sandbox empty; SYSTEM uses the watchface'
         this.mode = 'QuickApp private files'
         return
       }
 
       const entry = source[index]
-      if (!entry || !entry.uri || String(entry.uri).startsWith(BRIDGE_ROOT)) {
+      if (!entry || !entry.uri) {
         visit(index + 1)
         return
       }
@@ -259,7 +261,9 @@ export default {
 
   refresh() {
     if (this.mode === 'Lua backend via Files watchface') {
-      this.requestSystem('LIST', this.currentPath)
+      if (this.pendingRequest) {
+        this.requestSystem('LIST', this.currentPath)
+      }
       return
     }
     if (!file || typeof file.list !== 'function' || !canUse('@system.file.list')) {
@@ -400,6 +404,92 @@ export default {
     })
   },
 
+  // ---- restart-safe bridge hand-off --------------------------------
+  // The request file is the single source of truth. When the QuickApp is
+  // killed during the switch to the watchface, onInit re-reads it and
+  // either resumes waiting (ready=1) or fetches the finished result
+  // (consumed=<id> + response.txt) without the user doing anything.
+
+  restoreBridgeState() {
+    if (!file || typeof file.readText !== 'function' || !canUse('@system.file.readText')) {
+      this.refresh()
+      return
+    }
+    file.readText({
+      uri: BRIDGE_REQUEST,
+      encoding: 'UTF-8',
+      success: (data) => {
+        const text = data && data.text ? data.text : ''
+        if (text) this.restoreFromRequest(text)
+        else this.refresh()
+      },
+      fail: () => this.refresh()
+    })
+  },
+
+  restoreFromRequest(text) {
+    const request = {}
+    String(text).split(/\r?\n/).forEach((line) => {
+      if (!line) return
+      const sep = line.indexOf('=')
+      if (sep > 0) request[line.slice(0, sep)] = decodeBridgeValue(line.slice(sep + 1))
+    })
+
+    if (request.consumed || request.seen) {
+      // The watchface finished this request; fetch and show the result.
+      const id = request.consumed || request.seen
+      if (!file || typeof file.readText !== 'function') {
+        this.refresh()
+        return
+      }
+      file.readText({
+        uri: BRIDGE_RESPONSE,
+        encoding: 'UTF-8',
+        success: (data) => {
+          const response = parseBridgeResponse(data && data.text ? data.text : '')
+          if (!id || response.fields.id !== id) {
+            this.refresh()
+            return
+          }
+          this.pendingRequest = {
+            id: id,
+            op: response.fields.op || request.op || 'LIST',
+            path: response.fields.path || '/data',
+            restored: true
+          }
+          this.applyResponse(response)
+          this.markBridgeSeen(id)
+        },
+        fail: () => this.refresh()
+      })
+      return
+    }
+
+    if (request.ready === '1' && request.id && request.op) {
+      // The request was queued but the watchface has not processed it yet.
+      const pendingPath = request.path || '/data'
+      this.mode = 'Lua backend via Files watchface'
+      this.currentPath = request.op === 'LIST' ? pendingPath : this.currentPath
+      this.pendingRequest = { id: request.id, op: request.op, path: pendingPath }
+      this.status = 'Request pending; open Files watchface once, then reopen Vela Files'
+      return
+    }
+
+    this.refresh()
+  },
+
+  markBridgeSeen(id) {
+    if (!file || typeof file.writeText !== 'function') return
+    file.writeText({
+      uri: BRIDGE_REQUEST,
+      text: 'seen=' + id + '\n',
+      encoding: 'UTF-8',
+      append: false,
+      success: () => {},
+      fail: () => {}
+    })
+  },
+
   requestSystem(op, path) {
     if (!isSafeSystemPath(path)) {
       this.status = 'Unsafe system path rejected'
@@ -415,7 +505,7 @@ export default {
     const id = String(Date.now()) + '-' + String(this.requestSequence)
     this.currentPath = op === 'LIST' ? path : this.currentPath
     this.pendingRequest = { id: id, op: op, path: path }
-    this.status = 'Queued ' + op + '; open Files watchface once'
+    this.status = 'Sent; open Files watchface, then reopen Vela Files'
     this.mode = 'Lua backend via Files watchface'
     if (this.bridgeReady) this.writeBridgeRequest()
   },
@@ -437,7 +527,7 @@ export default {
       encoding: 'UTF-8',
       append: false,
       success: () => {
-        this.status = 'Request ready; open Files watchface to process'
+        this.status = 'Sent; open Files watchface, then reopen Vela Files'
       },
       fail: (error, code) => {
         this.status = 'Bridge request failed (' + String(code || 'write') + ')'
@@ -460,9 +550,16 @@ export default {
   consumeBridgeResponse(text) {
     if (!text) return
     const response = parseBridgeResponse(text)
+    if (!this.pendingRequest || response.fields.id !== this.pendingRequest.id) return
+    this.applyResponse(response)
+  },
+
+  applyResponse(response) {
     const pending = this.pendingRequest
-    if (!pending || response.fields.id !== pending.id) return
+    if (!pending) return
     this.pendingRequest = null
+    const op = response.fields.op || pending.op
+    const base = response.fields.path || pending.path
 
     if (response.fields.status !== 'ok') {
       this.items = []
@@ -471,8 +568,7 @@ export default {
       return
     }
 
-    if (pending.op === 'LIST') {
-      const base = response.fields.path || pending.path
+    if (op === 'LIST') {
       this.currentPath = base
       this.items = response.items.map((entry) => ({
         name: entry.name,
@@ -486,7 +582,7 @@ export default {
       return
     }
 
-    if (pending.op === 'READ') {
+    if (op === 'READ') {
       const body = response.fields.text || '(empty or binary file)'
       prompt.showDialog({
         title: entryName(pending.path),
@@ -497,7 +593,14 @@ export default {
       return
     }
 
-    if (pending.op === 'DELETE') {
+    if (op === 'DELETE') {
+      if (pending.restored) {
+        // On cold start there is no watchface to run the follow-up LIST yet;
+        // show the result and let the user continue with SYSTEM/REFRESH.
+        this.status = 'Delete complete; refresh to continue'
+        this.mode = 'Lua backend via Files watchface'
+        return
+      }
       this.status = 'Delete complete; refreshing system files'
       this.currentPath = systemParentPath(pending.path)
       this.requestSystem('LIST', this.currentPath)

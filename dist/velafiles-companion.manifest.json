@@ -1,8 +1,8 @@
 {
   "package": "com.deepscan.velafiles",
-  "file": "com.deepscan.velafiles.debug.0.3.0.rpk",
-  "bytes": 5768,
-  "sha256": "25d401a9cbba9a07f4c2558d71436dbfca84674f0290ca5dbcc6aa96a5026126",
+  "file": "com.deepscan.velafiles.debug.0.4.0.rpk",
+  "bytes": 6559,
+  "sha256": "3b4999915e0d28e3a15b43733a676d8fafc8b301e279351ba5d661fad3982b41",
   "entries": [
     {
       "name": "manifest.json",
@@ -14,7 +14,7 @@
     },
     {
       "name": "pages/files/files.ux",
-      "bytes": 16998
+      "bytes": 20492
     },
     {
       "name": "common/icon.png",

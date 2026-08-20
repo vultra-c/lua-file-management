@@ -5,7 +5,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const rpk = process.argv[2] || join(root, 'dist', 'com.deepscan.velafiles.debug.0.3.0.rpk')
+const rpk = process.argv[2] || join(root, 'dist', 'com.deepscan.velafiles.debug.0.4.0.rpk')
 const data = readFileSync(rpk)
 
 function readEntries(buffer) {
@@ -46,7 +46,7 @@ for (const required of ['manifest.json', 'app.ux', 'pages/files/files.ux', 'comm
 }
 const manifest = JSON.parse(entries.find((entry) => entry.name === 'manifest.json').content.toString('utf8'))
 if (manifest.deviceTypeList?.includes('watch') !== true) throw new Error('manifest is not watch-only')
-if (manifest.versionName !== '0.3.0' || manifest.versionCode !== 3) throw new Error('manifest version must be 0.3.0/3')
+if (manifest.versionName !== '0.4.0' || manifest.versionCode !== 4) throw new Error('manifest version must be 0.4.0/4')
 if (manifest.minAPILevel !== 1) throw new Error('manifest minAPILevel must be 1')
 for (const requiredFeature of ['system.app', 'system.file', 'system.prompt', 'system.vibrator']) {
   if (manifest.features?.some((feature) => feature.name === requiredFeature) !== true) throw new Error(`${requiredFeature} feature missing`)

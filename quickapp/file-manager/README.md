@@ -23,6 +23,8 @@
 3. Lua 表盘使用自己的 `lvgl.fs`/Lua 文件权限访问系统 `/data`，把结果写入同一映射目录的 `response.txt`；
 4. 轻应用轮询自己的 `internal://files/.velafiles-bridge/response.txt`，解析列表、预览或删除结果。
 
+挂起请求是持久化的：切到表盘期间轻应用进程可能被杀，但 `request.txt` 仍在；重新打开轻应用时会自动从 `request.txt` 恢复挂起状态、读取 `response.txt` 并直接显示结果，不需要再次排队。
+
 桥接请求带有版本号、请求 ID、`ready=1` 和操作类型；Lua 端只接受 `/data` 及其子路径，拒绝 `.`、`..`、空字节和其他根目录。处理完成后会写入消费标记，避免 Lua 状态重启时重复执行旧请求。
 
 ## 重要限制
@@ -36,11 +38,11 @@
 ## 设备使用流程
 
 1. 安装并打开 `bin/VelaFiles.face`，先用无关紧要的测试文件验证 Lua 表盘的浏览、预览和删除；
-2. 直接安装已由云端官方 toolkit 生成的 `quickapp/file-manager/dist/com.deepscan.velafiles.release.0.3.0.rpk`；如需重建，用 AIoT-IDE 或仓库内 `bun run release`；
+2. 直接安装已由云端官方 toolkit 生成的 `quickapp/file-manager/dist/com.deepscan.velafiles.release.0.4.0.rpk`；如需重建，用 AIoT-IDE 或仓库内 `bun run release`；
 3. 安装签名后的轻应用，先在 `APP` 模式验证自己的 `internal://files/`；
 4. 点击 `SYSTEM`，选择要访问的 `/data` 路径或操作；
-5. 看到“open Files watchface”提示后切换到 Lua 表盘，点击顶部 `Q`（或重新进入表盘让它自动处理）；
-6. 切回轻应用，等待返回列表/预览/删除结果。
+5. 看到排队提示后切换到 Lua 表盘（表盘启动/恢复时自动处理请求，也可以点击顶部 `Q`）；
+6. 切回轻应用：即使进程在切走时被杀，重新打开也会自动恢复请求并显示结果。
 
 不要先操作系统数据库、OTA 文件、健康数据、日志或正在使用的文件。传输和安装出现错误时，先确认表盘/轻应用版本匹配，并按设备端安装步骤逐步重试。
 

@@ -24,7 +24,9 @@ internal://tmp/    → 系统映射的临时区（按 API 规则使用）
 3. Lua 表盘使用自己的文件 API 访问系统 `/data`，把结果写入同一目录的 `response.txt`；
 4. 轻应用读取自己的 `internal://files/.velafiles-bridge/response.txt` 并继续显示。
 
-`launchQuickApp` 只覆盖 QuickApp→QuickApp，不能证明能自动启动 Lua 表盘；Band 9 Pro 也不能把 `system.event` 当成已验证的跨运行时通道。因此用户需要在轻应用排队后切换到表盘，点击顶部 `Q`（或重新进入表盘让它自动处理），再切回轻应用查看结果。
+`launchQuickApp` 只覆盖 QuickApp→QuickApp，不能证明能自动启动 Lua 表盘；Band 9 Pro 也不能把 `system.event` 当成已验证的跨运行时通道。因此用户需要在轻应用排队后切换到表盘（表盘启动/恢复时自动处理请求，也可点顶部 `Q` 手动处理），再切回轻应用查看结果。
+
+轻应用的挂起请求会持久化在 `request.txt`：切到表盘期间即使轻应用进程被杀，重新打开轻应用也会自动恢复挂起请求并读取 `response.txt` 显示结果，不需要再次排队。
 
 桥接请求有版本、ID、`ready=1`、操作和路径字段。Lua 只接受 `/data` 及其子路径，拒绝 `.`、`..`、空字节和其他根目录；删除需要轻应用先确认，Lua 端仍拒绝 `/` 和 `/data` 根目录。
 
@@ -77,12 +79,12 @@ bun tools/verify-companion.mjs
 ```text
 bin/VelaFiles.face
 bin/resource.bin
-dist/com.deepscan.velafiles.debug.0.3.0.rpk
+dist/com.deepscan.velafiles.debug.0.4.0.rpk
 dist/velafiles-companion.manifest.json
-quickapp/file-manager/dist/com.deepscan.velafiles.release.0.3.0.rpk
+quickapp/file-manager/dist/com.deepscan.velafiles.release.0.4.0.rpk
 ```
 
-根目录 `.rpk` 仅用于本地结构验证；官方 release 包位于 `quickapp/file-manager/dist/com.deepscan.velafiles.release.0.3.0.rpk`，已由云端 `aiot-toolkit@2.0.5 release` 生成。后续发布应在 `quickapp/file-manager/sign/` 提供自己的 `certificate.pem` 与 `private.pem` 后运行：
+根目录 `.rpk` 仅用于本地结构验证；官方 release 包位于 `quickapp/file-manager/dist/com.deepscan.velafiles.release.0.4.0.rpk`，已由云端 `aiot-toolkit@2.0.5 release` 生成。后续发布应在 `quickapp/file-manager/sign/` 提供自己的 `certificate.pem` 与 `private.pem` 后运行：
 
 ```bash
 cd quickapp/file-manager
@@ -97,11 +99,11 @@ bun run release
 1. 安装 `bin/VelaFiles.face` 到小米手环 9 Pro；
 2. 打开表盘，先从无关紧要的测试文件开始，确认能进入目录、查看文本、删除文件；
 3. 不要先删除系统数据库、OTA 文件、健康数据、日志或正在使用的文件；
-4. 安装 `quickapp/file-manager/dist/com.deepscan.velafiles.release.0.3.0.rpk`；如需重新发布，打开 `quickapp/file-manager/`，使用官方 `bun run release` 或 AIoT-IDE 构建并签名；
+4. 安装 `quickapp/file-manager/dist/com.deepscan.velafiles.release.0.4.0.rpk`；如需重新发布，打开 `quickapp/file-manager/`，使用官方 `bun run release` 或 AIoT-IDE 构建并签名；
 5. 安装签名后的 RPK，在 `APP` 模式验证轻应用自己的 `internal://files/`；
 6. 点击 `SYSTEM`，选择 `/data` 或子目录操作；
-7. 看到排队提示后切换到 Lua 表盘，点击 `Q`；
-8. 切回轻应用，等待系统目录、文本或删除结果返回。
+7. 看到排队提示后切换到 Lua 表盘（表盘会自动处理，也可以点顶部 `Q`）；
+8. 切回轻应用——即使切走时轻应用进程被杀，重新打开也会自动恢复请求并显示结果。
 
 如果桥接目录映射或表盘权限不成立，轻应用会显示失败原因；这不影响表盘单独管理它实际能访问的目录。安装、传输或签名报错时，先确认表盘和 RPK 版本匹配，再按安装工具/视频步骤逐步重试。
 

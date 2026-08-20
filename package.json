@@ -1,6 +1,6 @@
 {
   "name": "vela-files-pair",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "小米手环 9 Pro Lua 文件管理表盘 + Vela Files 配套轻应用",
   "type": "module",
