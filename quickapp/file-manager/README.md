@@ -17,9 +17,7 @@
 
 1. 轻应用把 `LIST`、`READ` 或已确认的 `DELETE` 请求写入自己的：
    `internal://files/.velafiles-bridge/request.txt`；
-2. 按技能包记录的 Vela 文件系统映射，Lua 表盘尝试从：
-   `/data/quickapp/file/com.deepscan.velafiles/.velafiles-bridge/request.txt`
-   读取请求；
+2. Lua 表盘自动定位桥接目录（不信任单一固定路径）：先检查已知候选布局，再对 `/data/quickapp` 做有界遍历，寻找携带协议签名的 `request.txt`，命中后缓存；表盘 `i` 页会显示实际发现的桥接根目录，`Q` 按钮强制重新扫描；
 3. Lua 表盘使用自己的 `lvgl.fs`/Lua 文件权限访问系统 `/data`，把结果写入同一映射目录的 `response.txt`；
 4. 轻应用轮询自己的 `internal://files/.velafiles-bridge/response.txt`，解析列表、预览或删除结果。
 

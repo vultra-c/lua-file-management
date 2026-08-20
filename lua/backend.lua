@@ -28,6 +28,8 @@ Backend.BRIDGE_PACKAGE = "com.deepscan.velafiles"
 Backend.BRIDGE_ROOT = "/data/quickapp/file/" .. Backend.BRIDGE_PACKAGE .. "/.velafiles-bridge"
 Backend.BRIDGE_REQUEST = Backend.BRIDGE_ROOT .. "/request.txt"
 Backend.BRIDGE_RESPONSE = Backend.BRIDGE_ROOT .. "/response.txt"
+-- Cached bridge root discovered on the device (nil until scanned).
+Backend.bridgeDiscovered = nil
 Backend.MAX_ENTRIES = 300
 Backend.MAX_PREVIEW = 256
 
@@ -200,6 +202,103 @@ local function writeAll(path, data)
   return ok, ok and nil or tostring(err)
 end
 
+-- Read only the first bytes of a file: enough to recognize the line
+-- protocol header without pulling a whole large file into memory.
+local function probeRequest(path)
+  local file = openFile(path, "r")
+  if not file then return nil end
+  local head = nil
+  pcall(function() head = file:read(512) end)
+  if type(head) ~= "string" then head = nil end
+  pcall(function() file:close() end)
+  return head
+end
+
+-- ---- bridge directory discovery -------------------------------------
+-- The documented mapping "internal://files/ -> /data/quickapp/file/{pkg}"
+-- is target-dependent, so the backend never trusts a single path. It checks
+-- known candidate layouts first, then runs a bounded walk under /data/quickapp
+-- looking for a request.txt that carries this protocol's signature. The first
+-- hit is cached; a request queued later is picked up on the next user action
+-- (Q button, resume, startup) because the walk is bounded and only runs when
+-- the cache is empty.
+
+local function listNames(path, cap)
+  local dir = openDir(path)
+  if not dir then return nil end
+  local names, seen = {}, {}
+  local limit = cap or 64
+  local name = dir:read()
+  while name and #names < limit do
+    local clean = baseName(name)
+    if clean ~= "" and clean ~= "." and clean ~= ".." and not seen[clean] then
+      seen[clean] = true
+      names[#names + 1] = clean
+    end
+    name = dir:read()
+  end
+  pcall(function() dir:close() end)
+  table.sort(names)
+  return names
+end
+
+local function isBridgeRequest(raw)
+  if type(raw) ~= "string" or raw == "" then return false end
+  local hasVersion = raw:find("version=1", 1, true) ~= nil
+  local hasMarker = raw:find("ready=1", 1, true) ~= nil
+    or raw:find("consumed=", 1, true) ~= nil
+    or raw:find("seen=", 1, true) ~= nil
+  return hasVersion and hasMarker
+end
+
+local function scanForBridgeRoot()
+  local packageName = Backend.BRIDGE_PACKAGE
+  local candidates = {
+    "/data/quickapp/file/" .. packageName .. "/.velafiles-bridge",
+    "/data/quickapp/file/" .. packageName .. "/files/.velafiles-bridge",
+    "/data/quickapp/" .. packageName .. "/.velafiles-bridge",
+    "/data/quickapp/app/" .. packageName .. "/.velafiles-bridge",
+    "/data/quickapp/file/" .. packageName,
+  }
+  for _, candidate in ipairs(candidates) do
+    if isBridgeRequest(probeRequest(candidate .. "/request.txt")) then
+      return candidate
+    end
+  end
+  -- Bounded breadth-first walk as a fallback for an unknown layout.
+  local queue = { { path = "/data/quickapp", depth = 0 } }
+  local head = 1
+  local visited = 0
+  while head <= #queue and visited < 1500 do
+    local current = queue[head]
+    head = head + 1
+    visited = visited + 1
+    if isBridgeRequest(probeRequest(current.path .. "/request.txt")) then
+      return current.path
+    end
+    if current.depth < 4 then
+      local names = listNames(current.path, 32)
+      if names then
+        for _, name in ipairs(names) do
+          queue[#queue + 1] = { path = current.path .. "/" .. name, depth = current.depth + 1 }
+        end
+      end
+    end
+  end
+  return nil
+end
+
+local function discoverBridgeRoot()
+  if Backend.bridgeDiscovered then return Backend.bridgeDiscovered end
+  local found = scanForBridgeRoot()
+  if found then Backend.bridgeDiscovered = found end
+  return found
+end
+
+function Backend.bridgeStatus()
+  return discoverBridgeRoot()
+end
+
 local function parseRequest(raw)
   local request = {}
   for line in tostring(raw or ""):gmatch("[^\r\n]+") do
@@ -224,8 +323,8 @@ local function responseHeader(request, status)
   }
 end
 
-local function markConsumed(request)
-  return writeAll(Backend.BRIDGE_REQUEST, table.concat({
+local function markConsumed(request, root)
+  return writeAll(root .. "/request.txt", table.concat({
     "version=" .. tostring(Backend.BRIDGE_PROTOCOL),
     "consumed=" .. Backend.encode(request.id),
     "\n",
@@ -233,9 +332,11 @@ local function markConsumed(request)
 end
 
 function Backend.processBridge()
-  local raw = readAll(Backend.BRIDGE_REQUEST)
+  local discovered = discoverBridgeRoot()
+  local root = discovered or Backend.BRIDGE_ROOT
+  local raw = readAll(root .. "/request.txt")
   if type(raw) ~= "string" or raw == "" then
-    return false, "no request"
+    return false, discovered and "no request" or "bridge dir not found"
   end
 
   local request = parseRequest(raw)
@@ -252,7 +353,7 @@ function Backend.processBridge()
     lines[3] = "status=ok"
     lines[#lines + 1] = "backend=lua"
     lines[#lines + 1] = "protocol=" .. tostring(Backend.BRIDGE_PROTOCOL)
-    lines[#lines + 1] = "mapping=" .. Backend.encode(Backend.BRIDGE_ROOT)
+    lines[#lines + 1] = "mapping=" .. Backend.encode(root)
   elseif not validPath then
     lines[#lines + 1] = "error=" .. Backend.encode("unsafe path")
   elseif request.op == "LIST" then
@@ -287,12 +388,12 @@ function Backend.processBridge()
     lines[#lines + 1] = "error=unknown operation"
   end
 
-  local ok, err = writeAll(Backend.BRIDGE_RESPONSE, table.concat(lines, "\n") .. "\n")
+  local ok, err = writeAll(root .. "/response.txt", table.concat(lines, "\n") .. "\n")
   if not ok then return false, err or "response write failed" end
 
   -- A consumed marker prevents replay after a Lua state restart. The next
   -- QuickApp request overwrites this file with a fresh ready=1 payload.
-  local consumed, consumeErr = markConsumed(request)
+  local consumed, consumeErr = markConsumed(request, root)
   if not consumed then return false, consumeErr or "request acknowledge failed" end
   return true, request.op
 end

@@ -173,8 +173,9 @@ end, { color = C.TEXT, font = 24 })
 
 local bridgeButton = makeButton(header, W - 144, 0, 44, HEADER_H, "Q", function()
   if processBridge then
-    local ok, detail = processBridge()
+    local ok, detail = processBridge(true)
     if ok then setText(statusLabel, "bridge: " .. tostring(detail))
+    elseif detail == "bridge dir not found" then setText(statusLabel, "bridge dir not found")
     else setText(statusLabel, "bridge idle") end
   end
 end, { color = C.ACCENT, font = 16 })
@@ -194,7 +195,7 @@ local infoButton = makeButton(header, W - 48, 0, 48, HEADER_H, "i", function()
     "Read files        [" .. available(lvgl.fs and lvgl.fs.open_file) .. "]",
     "Delete            [" .. available(os and os.remove) .. "]",
     "QuickApp bridge   " .. Backend.BRIDGE_PACKAGE,
-    "Bridge root       " .. Backend.BRIDGE_ROOT,
+    "Bridge root       " .. (Backend.bridgeStatus() or "not found yet"),
     "Root              " .. HOME,
   }, "\n")
   showInfo("FILES BACKEND", body, "Q = process a pending QuickApp request")
@@ -475,8 +476,8 @@ end
 -- Initial page: the Lua backend starts at /data and never invokes a shell command.
 -- If the companion QuickApp has queued a request in its private sandbox,
 -- process it here and again on resume. The real mapping is target-dependent.
-processBridge = function()
-  local ok, detail = Backend.processBridge()
+processBridge = function(force)
+  local ok, detail = Backend.processBridge(force == true)
   navigate(path)
   return ok, detail
 end

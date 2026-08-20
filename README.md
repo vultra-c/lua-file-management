@@ -102,8 +102,10 @@ bun run release
 4. 安装 `quickapp/file-manager/dist/com.deepscan.velafiles.release.0.4.0.rpk`；如需重新发布，打开 `quickapp/file-manager/`，使用官方 `bun run release` 或 AIoT-IDE 构建并签名；
 5. 安装签名后的 RPK，在 `APP` 模式验证轻应用自己的 `internal://files/`；
 6. 点击 `SYSTEM`，选择 `/data` 或子目录操作；
-7. 看到排队提示后切换到 Lua 表盘（表盘会自动处理，也可以点顶部 `Q`）；
+7. 看到排队提示后切换到 Lua 表盘（表盘启动/恢复时会自动处理，也可以点顶部 `Q` 强制处理）；
 8. 切回轻应用——即使切走时轻应用进程被杀，重新打开也会自动恢复请求并显示结果。
+
+桥接目录是自动发现的：表盘不再只认文档里的单一路径，而是先检查已知候选布局，再对 `/data/quickapp` 做有界遍历，找到带协议签名的 `request.txt` 后缓存。如果一直停在 pending：打开表盘点顶部 `i`，看 `Bridge root` 一行显示的是真实路径还是 `not found yet`；再进 `/data/quickapp` 看目录结构，把看到的层级发给我即可定位真实映射。
 
 如果桥接目录映射或表盘权限不成立，轻应用会显示失败原因；这不影响表盘单独管理它实际能访问的目录。安装、传输或签名报错时，先确认表盘和 RPK 版本匹配，再按安装工具/视频步骤逐步重试。
 

@@ -19,8 +19,8 @@
 
 1. Lua 表盘和 Vela JS 轻应用是不同运行时，不能互相 `require`。
 2. 官方 QuickApp 文件 URI 是应用私有虚拟路径：`internal://files/`、`internal://cache/`、`internal://mass/`、`internal://tmp/`。QuickApp 不能直接把它们改写成任意系统 `/data`。
-3. 技能资料记录的物理映射是 `/data/quickapp/file/{package}/`；本项目把 `internal://files/.velafiles-bridge/` 作为轻应用私有请求/响应目录，Lua 端按 `com.deepscan.velafiles` 读取该映射路径。该映射和 Lua 权限是 9 Pro 真机待验证项，不是通用 QuickApp IPC 保证。
-4. `launchQuickApp` 只能用于 QuickApp→QuickApp，不能据此推断 QuickApp 能自动启动 Lua 表盘；`system.event` 也不作为 Band 9 Pro 的跨运行时桥接。因此流程是“轻应用排队 → 用户打开表盘处理 → 轻应用读取结果”。轻应用把挂起请求持久化在 `request.txt`，冷启动时会自动恢复并读取 `response.txt`，不依赖进程存活。
+3. 技能资料记录的物理映射是 `/data/quickapp/file/{package}/`；本项目把 `internal://files/.velafiles-bridge/` 作为轻应用私有请求/响应目录。由于该映射是机型相关的，Lua 端不信任单一固定路径：它先检查已知候选布局，再对 `/data/quickapp` 做有界遍历（深度 ≤4、每目录 ≤32 项、总量 ≤1500 节点），寻找携带本协议签名的 `request.txt`，命中后缓存该根目录。表盘 `i` 页显示实际发现的桥接根目录；`Q` 按钮强制重新扫描。该映射和 Lua 权限仍是 9 Pro 真机待验证项，不是通用 QuickApp IPC 保证。
+4. `launchQuickApp` 只能用于 QuickApp→QuickApp，不能据此推断 QuickApp 能自动启动 Lua 表盘；`system.event` 也不作为 Band 9 Pro 的跨运行时桥接。因此流程是“轻应用排队 → 用户打开表盘处理 → 轻应用读取结果”。轻应用把挂起请求持久化在 `request.txt`，冷启动时会自动恢复并读取 `response.txt`，不依赖进程存活；表盘在启动、`pageOnResume` 和点击 `Q` 时处理待处理请求。
 5. 请求必须包含 `version=1`、`ready=1`、请求 ID、操作和路径；Lua 端只接受 `/data` 或其子路径，拒绝 `.`、`..`、空字节和其他根目录。
 6. 响应写入成功后，Lua 端把请求改为消费标记，避免重启后重放旧的删除请求；下一次 QuickApp 请求覆盖该文件。
 7. Lua 后端优先使用 `lvgl.fs.open_dir`、`lvgl.fs.open_file`，每次操作都显式关闭句柄并用 `pcall` 保护；删除受当前进程权限和挂载属性限制。
